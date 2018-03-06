@@ -30,8 +30,6 @@ executable transcoder
                        process,
                        hex,
                        transformers,
-                       lens,
-                       bytestring-progress,
-                       http-client,
-                       streaming-utils,
-                       streaming-bytestring
+                       pipes-http,
+                       pipes-bytestring,
+                       pipes

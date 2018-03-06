@@ -3,16 +3,15 @@
 import Control.Arrow ((>>>))
 import Control.Concurrent.STM
 import Control.Exception
-import Control.Lens
+-- import Control.Lens
 import Control.Monad
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Except
 import Crypto.Hash.MD5 as MD5
-import Data.ByteString
+import Data.ByteString as B
 import qualified Data.ByteString.Char8 as C
 import qualified Data.ByteString.Lazy as LBS
-import Data.ByteString.Lazy.Progress
-import Data.ByteString.Streaming.HTTP
+-- import Data.ByteString.Lazy.Progress
 import Data.Char
 import Data.Hex
 import qualified Data.List as List
@@ -25,7 +24,10 @@ import Network.Wai as Wai
 import Network.Wai.Handler.Warp
 import System.Directory
 import System.Process
-import qualified Data.ByteString.Streaming as SBS
+import Pipes.HTTP
+import Pipes.ByteString as PB
+import System.IO
+import Pipes
 
 main :: IO ()
 main = do
@@ -98,10 +100,26 @@ download :: ByteString -> FilePath -> IO ()
 download i file = do
   req <- parseRequest . C.unpack $ i
   m <- newHttpClientManager
-  runResourceT $ do
-    resp <- http req m
-    -- lift . traceIO $ "downloading " <> file
-    SBS.writeFile file $ responseBody resp
+  traceIO $ "downloading " <> file
+  withHTTP req m $ \resp -> do
+    let cl = contentLength (Pipes.HTTP.responseHeaders resp)
+    withFile file WriteMode $ \out ->
+      runEffect $ responseBody resp >-> progress cl >-> PB.toHandle out
+    
+
+contentLength :: ResponseHeaders -> Maybe Int
+contentLength hs = read <$> C.unpack <$> snd <$> List.find (\(n,_)->n==hContentLength) hs
+
+progress :: Maybe Int -> Pipe ByteString ByteString IO ()
+progress length = go 0
+  where 
+    go sofar = do
+      bs <- await
+      let now = B.length bs
+      let sofar = sofar + now
+      liftIO $ traceIO $ "downloaded " <> show sofar <> "/" <> show length
+      yield bs
+      go sofar
 
 ffmpegArgs outputName i opts =
   ["nice", "ffmpeg", "-hide_banner", "-i", i] ++ opts ++ ["-y", outputName]

@@ -8,3 +8,4 @@ extra-deps:
   - streaming-bytestring-0.1.4.6
   - streaming-commons-0.1.17
   - mmorph-1.0.9
+  - pipes-http-1.0.5
