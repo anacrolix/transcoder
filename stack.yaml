@@ -1,0 +1,10 @@
+resolver: lts-9.21
+extra-deps:
+  - bytestring-progress-1.0.8
+  - streaming-utils-0.1.4.7
+  - aeson-1.1.2.0
+  - attoparsec-0.13.1.0
+  - streaming-0.1.4.5
+  - streaming-bytestring-0.1.4.6
+  - streaming-commons-0.1.17
+  - mmorph-1.0.9
