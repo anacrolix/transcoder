@@ -39,7 +39,10 @@ type OpId = String
 type ServerRequest = Wai.Request
 
 app :: TVar (Set OpId) -> ServerRequest -> (Wai.Response -> IO b) -> IO b
-app ops req respond = respond =<< serveTranscode ops req
+app ops req respond = do
+  traceIO $ "serving " <> C.unpack (rawPathInfo req <> rawQueryString req)
+  resp <- serveTranscode ops req
+  respond resp
 
 badParam :: ByteString -> Wai.Response
 badParam name = responseLBS status400 [] $ LBS.fromStrict $ "bad " <> name
@@ -54,6 +57,7 @@ serveTranscode ops req =
       bracket_ (claimOp outputName ops) (releaseOp outputName ops) $ do
         ready <- doesFileExist outputName
         unless ready $ transcode outputName i opt
+        -- Warp seems to handle the file parts for us if we pass Nothing.
         return $ responseFile status200 [] outputName Nothing
   where
     qs = Wai.queryString req
@@ -104,22 +108,21 @@ download i file = do
   withHTTP req m $ \resp -> do
     let cl = contentLength (Pipes.HTTP.responseHeaders resp)
     withFile file WriteMode $ \out ->
-      runEffect $ responseBody resp >-> progress cl >-> PB.toHandle out
+      runEffect $ responseBody resp >-> progress (show cl) >-> PB.toHandle out
     
 
 contentLength :: ResponseHeaders -> Maybe Int
 contentLength hs = read <$> C.unpack <$> snd <$> List.find (\(n,_)->n==hContentLength) hs
 
-progress :: Maybe Int -> Pipe ByteString ByteString IO ()
+progress :: String -> Pipe ByteString ByteString IO ()
 progress length = go 0
   where 
-    go sofar = do
+    go last = do
+      liftIO $ traceIO $ "downloaded " <> show last <> "/" <> length
       bs <- await
-      let now = B.length bs
-      let sofar = sofar + now
-      liftIO $ traceIO $ "downloaded " <> show sofar <> "/" <> show length
+      let step = B.length bs
       yield bs
-      go sofar
+      go $ last + step
 
 ffmpegArgs outputName i opts =
   ["nice", "ffmpeg", "-hide_banner", "-i", i] ++ opts ++ ["-y", outputName]
