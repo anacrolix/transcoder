@@ -2,21 +2,16 @@
 -- documentation, see http://haskell.org/cabal/users-guide/
 
 name:                transcoder
-version:             0.1.0.0
--- synopsis:
--- description:
-license:             BSD3
-license-file:        LICENSE
+version: 0.1
 author:              Matt Joiner
 maintainer:          anacrolix@gmail.com
--- copyright:
--- category:
 build-type:          Simple
-extra-source-files:  ChangeLog.md
 cabal-version:       >=1.10
 
 executable transcoder
+  default-language: Haskell2010
   main-is:             Main.hs
+  other-modules: SkipChan
   build-depends:       base,
                        wai,
                        warp,
@@ -32,4 +27,7 @@ executable transcoder
                        transformers,
                        pipes-http,
                        pipes-bytestring,
-                       pipes
+                       pipes,
+                       aeson,
+                       wai-websockets,
+                       websockets
