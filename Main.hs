@@ -187,16 +187,16 @@ onProgressEvent oi t = do
 transcode :: OperationEnv -> IO ()
 transcode env =
   do bracket_
-       (up $ \p ->  p {downloading = True})
-       (up $ \p ->  p {downloading = False})
+       (up $ \p -> p {downloading = True})
+       (up $ \p -> p {downloading = False})
        (let onDownloadProgress f = do
-              up $ \p ->  p {progressDownloadProgress = f}
+              up $ \p -> p {progressDownloadProgress = f}
         in download env onDownloadProgress)
      forkIO $ getDuration env
      onException
        (bracket_
-          (up $ \p ->  p {converting = True})
-          (up $ \p ->  p {converting = False})
+          (up $ \p -> p {converting = True})
+          (up $ \p -> p {converting = False})
           (callProcess (List.head args) (List.tail args)))
        (removeFileIfExists $ target env)
      `finally` removeFileIfExists (inputFile env)
