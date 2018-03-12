@@ -47,7 +47,9 @@ main = do
   es <- newTVarIO Map.empty
   let progressAppPort = 3001
   let t = Transcoder a es $ "localhost:" <> show progressAppPort
-  forkIO $ run progressAppPort $ progressApp t
+  forkIO $
+    run progressAppPort $
+    progressApp $ \id pos -> updateProgress id t $ \p -> p {convertPos = pos}
   run 3000 $ app t
 
 type OpId = FilePath
@@ -325,23 +327,20 @@ trimPrefix p list =
     take = List.take
     drop = List.drop
 
-progressApp :: Transcoder -> Application
-progressApp t req respond = do
+progressApp :: (OpId -> Integer -> IO ()) -> Application
+progressApp f req respond = do
   let id =
         fmap C.unpack . getFirstQueryValue "id" $ Wai.queryString req :: Maybe OpId
   case id of
     Nothing -> respond $ responseLBS status400 [] "no id"
     Just id -> do
       let act :: [String] -> IO ()
-          act ("out_time_ms":s:_) =
-            updateProgress id t $ \p ->
-               p {convertPos = 1000 * read s :: Integer}
-          act _ = return ()
-      sequence_ . List.map (act . List.map LC.unpack . LC.split '=') . LC.lines =<<
-        lazyRequestBody req
+          act ("out_time_ms":s:_) = f id $ 1000 * read s
+          act x = traceIO $ show x
+      body <- lazyRequestBody req
+      sequence_ $
+        List.map (act . List.map LC.unpack . LC.split '=') $ LC.lines body
       respond $ responseLBS status200 [] ""
-  where
-
 
 getDuration :: OperationEnv -> IO ()
 getDuration env = do
@@ -350,4 +349,4 @@ getDuration env = do
     Nothing -> return ()
     Just d ->
       updateProgress (target env) (transcoder env) $ \p ->
-         p {inputDuration = ceiling $ d * 1e9}
+        p {inputDuration = ceiling $ d * 1e9}
