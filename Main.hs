@@ -1,10 +1,13 @@
 {-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE OverloadedStrings, DisambiguateRecordFields #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE DisambiguateRecordFields #-}
 
 import Control.Arrow ((>>>))
+import Control.Concurrent
 import Control.Concurrent.STM
 import Control.Exception
 import Control.Monad
+import Control.Monad.Reader
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Except
 import Crypto.Hash.MD5 as MD5
@@ -13,7 +16,9 @@ import Data.Aeson.Types
 import Data.ByteString as B
 import qualified Data.ByteString.Char8 as C
 import qualified Data.ByteString.Lazy as LBS
+import qualified Data.ByteString.Lazy.Char8 as LC
 import Data.Char
+import Data.Function
 import Data.Hex
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
@@ -21,6 +26,7 @@ import Data.Maybe
 import Data.Monoid
 import Data.Set as Set
 import Debug.Trace
+import qualified FFmpeg
 import GHC.Generics
 import Network.HTTP.Types
 import Network.Wai as Wai
@@ -39,10 +45,12 @@ main :: IO ()
 main = do
   a <- newTVarIO Map.empty
   es <- newTVarIO Map.empty
-  let t = Transcoder a es
+  let progressAppPort = 3001
+  let t = Transcoder a es $ "localhost:" <> show progressAppPort
+  forkIO $ run progressAppPort $ progressApp t
   run 3000 $ app t
 
-type OpId = String
+type OpId = FilePath
 
 type ServerRequest = Wai.Request
 
@@ -51,21 +59,49 @@ type EventChan = SkipChan ()
 data Transcoder = Transcoder
   { active :: TVar (Map.Map OpId Progress)
   , events :: TVar (Map.Map OpId EventChan)
+  , progressListenerAddr :: String
   }
+
+type Operation = ReaderT OperationEnv
+
+data OperationEnv = OperationEnv
+  { inputUrl :: ByteString
+  , ffmpegOpts :: [ByteString]
+  , format :: ByteString
+  , transcoder :: Transcoder
+  }
+
+target :: OperationEnv -> OpId
+target = C.unpack . (getOutputName <$> inputUrl <*> ffmpegOpts <*> format)
+
+inputFile :: OperationEnv -> FilePath
+inputFile env = target env <> ".input"
+
+progressUrl :: OperationEnv -> String
+progressUrl env =
+  "http://" <> progressListenerAddr (transcoder env) <> "/?id=" <> target env
 
 app :: Transcoder -> Application
 app t req respond = do
-  traceIO $ "serving " <> C.unpack (rawPathInfo req <> rawQueryString req)
+  traceIO $
+    "serving " <> (show $ isWebSocketsReq req) <> " " <>
+    C.unpack (rawPathInfo req <> rawQueryString req)
   resp <- serveTranscode t req
   respond resp
 
-wsApp t oi pending_conn = do
-  conn <- acceptRequest pending_conn
-  es <- dupEvents t oi
-  forever $ do
-    p <- getProgress oi t
-    sendTextData conn $ encode p
-    getSkipChan es
+wsApp :: OperationEnv -> PendingConnection -> IO ()
+wsApp env pending_conn =
+  join $
+  (flip runReaderT) env $ do
+    t <- asks transcoder
+    oi <- asks target
+    lift $ do
+      conn <- acceptRequest pending_conn
+      es <- dupEvents t oi
+      forever $ do
+        p <- getProgress oi t
+        sendTextData conn $ encode p
+        getSkipChan es
 
 dupEvents :: Transcoder -> OpId -> IO EventChan
 dupEvents t oi = do
@@ -99,24 +135,22 @@ serveTranscode t req =
   runBreakT $ do
     i <- queryValue "i"
     f <- queryValue "f"
-    let outputName = C.unpack $ getOutputName i opt f
-    case websocketsApp defaultConnectionOptions (wsApp t outputName) req of
+    let env = OperationEnv i opts f t
+    case websocketsApp defaultConnectionOptions (wsApp env) req of
       Just resp -> pure resp
       Nothing ->
         lift $
-        bracket_
-          (claimOp outputName $ active t)
-          (releaseOp outputName $ active t) $ do
-          ready <- doesFileExist outputName
-          unless ready $ transcode outputName t i opt
+        bracket_ (claimOp env) (releaseOp env) $ do
+          ready <- doesFileExist $ target env
+          unless ready $ transcode env
           -- Warp seems to handle the file parts for us if we pass Nothing.
-          return $ responseFile status200 [] outputName Nothing
+          return $ responseFile status200 [] (target env) Nothing
   where
     qs = Wai.queryString req
     queryValue :: ByteString -> ExceptT Wai.Response IO ByteString
     queryValue k =
       maybe (throwE . badParam $ k) return $ getFirstQueryValue k qs
-    opt = getQueryValues "opt" qs
+    opts = getQueryValues "opt" qs
 
 type BreakT m a = ExceptT a m a
 
@@ -136,9 +170,9 @@ mergeEither e =
     Left v -> v
     Right v -> v
 
-updateProgress :: OpId -> Transcoder -> (Progress -> Maybe Progress) -> IO ()
+updateProgress :: OpId -> Transcoder -> (Progress -> Progress) -> IO ()
 updateProgress k t f = do
-  atomically $ modifyTVar' (active t) $ Map.update f k
+  atomically $ modifyTVar' (active t) $ Map.update (Just . f) k
   onProgressEvent k t
 
 onProgressEvent :: OpId -> Transcoder -> IO ()
@@ -148,22 +182,25 @@ onProgressEvent oi t = do
     Nothing -> return ()
     Just ec -> putSkipChan ec ()
 
-transcode :: String -> Transcoder -> ByteString -> [ByteString] -> IO ()
-transcode name t i opts =
+transcode :: OperationEnv -> IO ()
+transcode env =
   do bracket_
-       (updateProgress name t $ \p -> Just p {downloading = True})
-       (updateProgress name t $ \p -> Just p {downloading = False})
-       (download i inputFile onDownloadProgress)
+       (up $ \p ->  p {downloading = True})
+       (up $ \p ->  p {downloading = False})
+       (let onDownloadProgress f = do
+              up $ \p ->  p {progressDownloadProgress = f}
+        in download env onDownloadProgress)
+     forkIO $ getDuration env
      onException
-       (callProcess (List.head args) (List.tail args))
-       (removeFileIfExists name)
-     `finally` removeFileIfExists inputFile
+       (bracket_
+          (up $ \p ->  p {converting = True})
+          (up $ \p ->  p {converting = False})
+          (callProcess (List.head args) (List.tail args)))
+       (removeFileIfExists $ target env)
+     `finally` removeFileIfExists (inputFile env)
   where
-    inputFile = name <> ".input"
-    args = ffmpegArgs name inputFile $ List.map C.unpack opts
-    onDownloadProgress f = do
-      traceIO $ show f
-      updateProgress name t $ \p -> Just p {progressDownloadProgress = f}
+    args = ffmpegArgs env
+    up = updateProgress (target env) (transcoder env)
 
 removeFileIfExists :: FilePath -> IO ()
 removeFileIfExists file = doesFileExist file >>= flip when (removeFile file)
@@ -172,9 +209,10 @@ newHttpClientManager = newManager defaultManagerSettings
 
 type FileLength = Integer
 
-download :: ByteString -> FilePath -> (Float -> IO ()) -> IO ()
-download i file progress = do
-  req <- parseRequest . C.unpack $ i
+download :: OperationEnv -> (Float -> IO ()) -> IO ()
+download env progress = do
+  let file = inputFile env
+  req <- parseRequest . C.unpack $ inputUrl env
   m <- newHttpClientManager
   traceIO $ "downloading " <> file
   withHTTP req m $ \resp -> do
@@ -197,17 +235,23 @@ downloadProgress ::
      String -> (FileLength -> IO ()) -> Pipe ByteString ByteString IO ()
 downloadProgress length pos = go 0
   where
-    go last = do
+    go last
       -- liftIO $ traceIO $ "downloaded " <> show last <> "/" <> length
+     = do
       bs <- await
       let step = fromIntegral $ B.length bs
       let next = last + step
       lift $ pos next
-      yield bs
+      Pipes.yield bs
       go $ next
 
-ffmpegArgs outputName i opts =
-  ["nice", "ffmpeg", "-hide_banner", "-i", i] ++ opts ++ ["-y", outputName]
+ffmpegArgs :: OperationEnv -> [String]
+ffmpegArgs env =
+  let i = C.unpack . inputUrl $ env
+      opts = List.map C.unpack . ffmpegOpts $ env
+      outputName = target env
+  in ["nice", "ffmpeg", "-hide_banner", "-i", i] ++
+     opts ++ ["-progress", progressUrl env, "-y", outputName]
 
 getFirstQueryValue :: ByteString -> Query -> Maybe ByteString
 getFirstQueryValue key = List.find (\(k, _) -> k == key) >>> fmap snd >>> join
@@ -221,16 +265,20 @@ getQueryValues key = mapMaybe f
         else Nothing
     f (_, Nothing) = Nothing
 
-claimOp :: String -> TVar (Map.Map OpId Progress) -> IO ()
-claimOp op ops =
-  atomically $ do
-    opsval <- readTVar ops
-    if Map.member op opsval
-      then retry
-      else modifyTVar ops $ Map.insert op defaultProgress
+-- claimOp :: String -> TVar (Map.Map OpId Progress) -> IO ()
+claimOp :: OperationEnv -> IO ()
+claimOp env =
+  let op = target env
+      ops = active . transcoder $ env
+  in atomically $ do
+       opsval <- readTVar ops
+       if Map.member op opsval
+         then retry
+         else modifyTVar ops $ Map.insert op defaultProgress
 
-releaseOp :: String -> TVar (Map.Map OpId Progress) -> IO ()
-releaseOp file active = atomically $ modifyTVar active $ Map.delete file
+releaseOp :: OperationEnv -> IO ()
+releaseOp env =
+  atomically $ modifyTVar (active $ transcoder env) $ Map.delete (target env)
 
 getOutputName :: ByteString -> [ByteString] -> ByteString -> ByteString
 getOutputName i opts f =
@@ -276,3 +324,30 @@ trimPrefix p list =
     len = List.length p
     take = List.take
     drop = List.drop
+
+progressApp :: Transcoder -> Application
+progressApp t req respond = do
+  let id =
+        fmap C.unpack . getFirstQueryValue "id" $ Wai.queryString req :: Maybe OpId
+  case id of
+    Nothing -> respond $ responseLBS status400 [] "no id"
+    Just id -> do
+      let act :: [String] -> IO ()
+          act ("out_time_ms":s:_) =
+            updateProgress id t $ \p ->
+               p {convertPos = 1000 * read s :: Integer}
+          act _ = return ()
+      sequence_ . List.map (act . List.map LC.unpack . LC.split '=') . LC.lines =<<
+        lazyRequestBody req
+      respond $ responseLBS status200 [] ""
+  where
+
+
+getDuration :: OperationEnv -> IO ()
+getDuration env = do
+  md <- FFmpeg.probeDuration $ inputFile env
+  case md of
+    Nothing -> return ()
+    Just d ->
+      updateProgress (target env) (transcoder env) $ \p ->
+         p {inputDuration = ceiling $ d * 1e9}
