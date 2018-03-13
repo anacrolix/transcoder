@@ -8,37 +8,38 @@ import Control.Concurrent.STM
 import Control.Exception
 import Control.Monad
 import Control.Monad.Reader
-import Control.Monad.Trans.Class
 import Control.Monad.Trans.Except
 import Crypto.Hash.MD5 as MD5
 import Data.Aeson
-import Data.Aeson.Types
 import Data.ByteString as B
 import qualified Data.ByteString.Char8 as C
 import qualified Data.ByteString.Lazy as LBS
-import qualified Data.ByteString.Lazy.Char8 as LC
+import qualified Data.ByteString.Streaming as BS
+import qualified Data.ByteString.Streaming.Char8 as BSC
 import Data.Char
-import Data.Function
 import Data.Hex
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Maybe
 import Data.Monoid
-import Data.Set as Set
 import Debug.Trace
 import qualified FFmpeg
 import GHC.Generics
 import Network.HTTP.Types
 import Network.Wai as Wai
-import Network.Wai.Handler.Warp
+import Network.Wai.Handler.Warp as Warp
 import Network.Wai.Handler.WebSockets
+import Network.Wai.Streaming
 import Network.WebSockets.Connection
 import Pipes
 import Pipes.ByteString as PB
 import Pipes.HTTP
 import SkipChan
+import Streaming as S
+import qualified Streaming.Prelude as S
 import System.Directory
 import System.IO
+import System.IO.Unsafe
 import System.Process
 
 main :: IO ()
@@ -48,9 +49,9 @@ main = do
   let progressAppPort = 3001
   let t = Transcoder a es $ "localhost:" <> show progressAppPort
   forkIO $
-    run progressAppPort $
+    Warp.run progressAppPort $
     progressApp $ \id pos -> updateProgress id t $ \p -> p {convertPos = pos}
-  run 3000 $ app t
+  Warp.run 3000 $ app t
 
 type OpId = FilePath
 
@@ -63,8 +64,6 @@ data Transcoder = Transcoder
   , events :: TVar (Map.Map OpId EventChan)
   , progressListenerAddr :: String
   }
-
-type Operation = ReaderT OperationEnv
 
 data OperationEnv = OperationEnv
   { inputUrl :: ByteString
@@ -118,7 +117,8 @@ dupEvents t oi = do
           return $ return newValue
 
 badParam :: ByteString -> Wai.Response
-badParam name = responseLBS status400 [] $ LBS.fromStrict $ "bad " <> name
+badParam name =
+  responseLBS status400 [] $ LBS.fromStrict $ "bad " <> name <> "\n"
 
 getProgress :: OpId -> Transcoder -> IO Progress
 getProgress op t = do
@@ -159,13 +159,6 @@ type BreakT m a = ExceptT a m a
 runBreakT :: (Functor m) => BreakT m a -> m a
 runBreakT = fmap mergeEither . runExceptT
 
-breakWith :: (Monad m) => a -> BreakT m a
-breakWith = ExceptT . return . Left
-
-maybeToEither :: a -> Maybe b -> Either a b
-maybeToEither l Nothing = Left l
-maybeToEither _ (Just r) = Right r
-
 mergeEither :: Either a a -> a
 mergeEither e =
   case e of
@@ -184,6 +177,9 @@ onProgressEvent oi t = do
     Nothing -> return ()
     Just ec -> putSkipChan ec ()
 
+{-# NOINLINE devNull #-}
+devNull = unsafePerformIO $ openFile "/dev/null" ReadWriteMode
+
 transcode :: OperationEnv -> IO ()
 transcode env =
   do bracket_
@@ -197,7 +193,14 @@ transcode env =
        (bracket_
           (up $ \p -> p {converting = True})
           (up $ \p -> p {converting = False})
-          (callProcess (List.head args) (List.tail args)))
+          (withFile (target env <> ".log") WriteMode $ \logFile ->
+             void $
+             createProcess
+               (proc (List.head args) (List.tail args))
+               { std_err = UseHandle logFile
+               , std_out = UseHandle logFile
+               , std_in = UseHandle devNull
+               }))
        (removeFileIfExists $ target env)
      `finally` removeFileIfExists (inputFile env)
   where
@@ -226,20 +229,16 @@ download env progress = do
             Nothing -> 0.5
     withFile file WriteMode $ \out ->
       runEffect $
-      responseBody resp >-> downloadProgress (show cl) bytesProgress >->
-      PB.toHandle out
+      responseBody resp >-> downloadProgress bytesProgress >-> PB.toHandle out
 
 contentLength :: ResponseHeaders -> Maybe FileLength
 contentLength hs =
   read <$> C.unpack <$> snd <$> List.find (\(n, _) -> n == hContentLength) hs
 
-downloadProgress ::
-     String -> (FileLength -> IO ()) -> Pipe ByteString ByteString IO ()
-downloadProgress length pos = go 0
+downloadProgress :: (FileLength -> IO ()) -> Pipe ByteString ByteString IO ()
+downloadProgress pos = go 0
   where
-    go last
-      -- liftIO $ traceIO $ "downloaded " <> show last <> "/" <> length
-     = do
+    go last = do
       bs <- await
       let step = fromIntegral $ B.length bs
       let next = last + step
@@ -334,13 +333,22 @@ progressApp f req respond = do
   case id of
     Nothing -> respond $ responseLBS status400 [] "no id"
     Just id -> do
+      resp <- respond $ responseLBS status200 [] ""
       let act :: [String] -> IO ()
-          act ("out_time_ms":s:_) = f id $ 1000 * read s
-          act x = traceIO $ show x
-      body <- lazyRequestBody req
-      sequence_ $
-        List.map (act . List.map LC.unpack . LC.split '=') $ LC.lines body
-      respond $ responseLBS status200 [] ""
+          act ss = do
+            traceIO $ show ss
+            case ss of
+              ("out_time_ms":s:_) -> f id $ 1000 * read s
+              -- Maybe return Bool for continuation based on progress field
+              _ -> return ()
+      let sBody = BSC.fromChunks $ streamingRequest req :: BS.ByteString IO ()
+          lines = BSC.lines $ sBody :: Stream (BS.ByteString IO) IO ()
+          bsLines = mapped BSC.toStrict lines :: Stream (Of ByteString) IO ()
+          sLines =
+            S.map (fmap C.unpack . C.split '=') bsLines :: Stream (Of [String]) IO ()
+      -- BSC.stdout sBody
+      S.mapM_ act sLines
+      return resp
 
 getDuration :: OperationEnv -> IO ()
 getDuration env = do
