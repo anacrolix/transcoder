@@ -42,16 +42,20 @@ import System.IO
 import System.IO.Unsafe
 import System.Process
 
+progressAppPort = 3001
+
 main :: IO ()
 main = do
-  a <- newTVarIO Map.empty
-  es <- newTVarIO Map.empty
-  let progressAppPort = 3001
-  let t = Transcoder a es $ "localhost:" <> show progressAppPort
+  t <- newTranscoder
   forkIO $
-    Warp.run progressAppPort $
+    Warp.runSettings (setTimeout 10000 . setPort progressAppPort $ defaultSettings) $
     progressApp $ \id pos -> updateProgress id t $ \p -> p {convertPos = pos}
   Warp.run 3000 $ app t
+
+newTranscoder = do
+  a <- newTVarIO Map.empty
+  es <- newTVarIO Map.empty
+  return $ Transcoder a es $ "localhost:" <> show progressAppPort
 
 type OpId = FilePath
 
@@ -297,7 +301,7 @@ data Progress = Progress
   , converting :: Bool
   , convertPos :: Integer
   , inputDuration :: Integer
-  } deriving (Generic)
+  } deriving (Generic, Show)
 
 instance ToJSON Progress where
   toEncoding =
@@ -334,11 +338,14 @@ progressApp f req respond = do
     Nothing -> respond $ responseLBS status400 [] "no id"
     Just id -> do
       resp <- respond $ responseLBS status200 [] ""
+      -- TODO: This doesn't seem to work?
+      pauseTimeout req
       let act :: [String] -> IO ()
           act ss = do
-            traceIO $ show ss
             case ss of
-              ("out_time_ms":s:_) -> f id $ 1000 * read s
+              ("out_time_ms":s:_) -> do
+                traceIO $ show ss
+                f id $ 1000 * read s
               -- Maybe return Bool for continuation based on progress field
               _ -> return ()
       let sBody = BSC.fromChunks $ streamingRequest req :: BS.ByteString IO ()
