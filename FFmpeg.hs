@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE BangPatterns #-}
 
 module FFmpeg where
 
@@ -8,22 +9,14 @@ import GHC.Generics
 import System.Process
 
 probeDuration :: String -> IO (Maybe Float)
-probeDuration s = do
-  (_, Just hout, _, ph) <-
-    createProcess
-      (proc
-         "ffprobe"
-         [ "-loglevel"
-         , "error"
-         , "-show_format"
-         , "-show_streams"
-         , "-of"
-         , "json"
-         , s
-         ])
-      {std_out = CreatePipe}
-  info <- decode <$> hGetContents hout
-  return $ read . duration . format <$> info
+probeDuration s =
+  withCreateProcess
+    (proc
+       "ffprobe"
+       ["-loglevel", "error", "-show_format", "-show_streams", "-of", "json", s])
+    {std_out = CreatePipe} $ \_ (Just hout) _ _ -> do
+    !info <- decode <$> hGetContents hout
+    return $ read . duration . format <$> info
 
 data Info = Info
   { format :: Format
