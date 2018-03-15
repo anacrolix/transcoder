@@ -48,7 +48,8 @@ main :: IO ()
 main = do
   t <- newTranscoder
   forkIO $
-    Warp.runSettings (setTimeout 10000 . setPort progressAppPort $ defaultSettings) $
+    Warp.runSettings
+      (setTimeout 10000 . setPort progressAppPort $ defaultSettings) $
     progressApp $ \id pos -> updateProgress id t $ \p -> p {convertPos = pos}
   Warp.run 3000 $ app t
 
@@ -182,7 +183,9 @@ onProgressEvent oi t = do
     Just ec -> putSkipChan ec ()
 
 {-# NOINLINE devNull #-}
-devNull = unsafePerformIO $ openFile "/dev/null" ReadWriteMode
+devNull =
+  unsafePerformIO $
+  trace "opening /dev/null" $ openFile "/dev/null" ReadWriteMode
 
 transcode :: OperationEnv -> IO ()
 transcode env =
@@ -270,7 +273,6 @@ getQueryValues key = mapMaybe f
         else Nothing
     f (_, Nothing) = Nothing
 
--- claimOp :: String -> TVar (Map.Map OpId Progress) -> IO ()
 claimOp :: OperationEnv -> IO ()
 claimOp env =
   let op = target env
