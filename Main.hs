@@ -260,7 +260,7 @@ downloadProgress pos = go 0
 
 ffmpegArgs :: OperationEnv -> [String]
 ffmpegArgs env =
-  let i = C.unpack . inputUrl $ env
+  let i = inputFile env
       opts = List.map C.unpack . ffmpegOpts $ env
       outputName = target env
   in ["nice", "ffmpeg", "-hide_banner", "-i", i] ++
