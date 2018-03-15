@@ -1,6 +1,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE DisambiguateRecordFields #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 import Control.Arrow ((>>>))
 import Control.Concurrent
@@ -188,28 +189,27 @@ devNull =
   trace "opening /dev/null" $ openFile "/dev/null" ReadWriteMode
 
 transcode :: OperationEnv -> IO ()
-transcode env =
-  do bracket_
-       (up $ \p -> p {downloading = True})
-       (up $ \p -> p {downloading = False})
-       (let onDownloadProgress f = do
-              up $ \p -> p {progressDownloadProgress = f}
-        in download env onDownloadProgress)
-     forkIO $ getDuration env
-     onException
-       (bracket_
-          (up $ \p -> p {converting = True})
-          (up $ \p -> p {converting = False})
-          (withFile (target env <> ".log") WriteMode $ \logFile ->
-             void $
-             createProcess
-               (proc (List.head args) (List.tail args))
-               { std_err = UseHandle logFile
-               , std_out = UseHandle logFile
-               , std_in = UseHandle devNull
-               }))
-       (removeFileIfExists $ target env)
-     `finally` removeFileIfExists (inputFile env)
+transcode env = do
+  bracket_
+    (up $ \p -> p {downloading = True})
+    (up $ \p -> p {downloading = False})
+    (let onDownloadProgress f = do
+           up $ \p -> p {progressDownloadProgress = f}
+     in download env onDownloadProgress)
+  forkIO $ getDuration env
+  onException
+    (bracket_
+       (up $ \p -> p {converting = True})
+       (up $ \p -> p {converting = False})
+       (withFile (target env <> ".log") WriteMode $ \logFile ->
+          withCreateProcess
+            (proc (List.head args) (List.tail args))
+            { std_err = UseHandle logFile
+            , std_out = UseHandle logFile
+            , std_in = UseHandle devNull
+            } $ \_ _ _ ph -> void $ waitForProcess ph))
+    (removeFileIfExists $ target env)
+     -- `finally` removeFileIfExists (inputFile env)
   where
     args = ffmpegArgs env
     up = updateProgress (target env) (transcoder env)
@@ -228,15 +228,20 @@ download env progress = do
   m <- newHttpClientManager
   traceIO $ "downloading " <> file
   withHTTP req m $ \resp -> do
-    let cl = contentLength (Pipes.HTTP.responseHeaders resp)
+    let cl = contentLength (Pipes.HTTP.responseHeaders resp) :: Maybe FileLength
+    existingSize <-
+      (Just <$> getFileSize file) `catch`
+      (\(_::IOException) -> return Nothing)
+    let complete = fromMaybe False $ (==) <$> cl <*> existingSize
     let bytesProgress fl =
           progress $
           case cl of
             Just total -> fromIntegral fl / fromIntegral total
             Nothing -> 0.5
-    withFile file WriteMode $ \out ->
-      runEffect $
-      responseBody resp >-> downloadProgress bytesProgress >-> PB.toHandle out
+    unless complete $
+      withFile file WriteMode $ \out ->
+        runEffect $
+        responseBody resp >-> downloadProgress bytesProgress >-> PB.toHandle out
 
 contentLength :: ResponseHeaders -> Maybe FileLength
 contentLength hs =
