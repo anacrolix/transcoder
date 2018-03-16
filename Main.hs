@@ -246,6 +246,7 @@ download env progress = do
   m <- newHttpClientManager
   traceIO $ "downloading " <> file
   withHTTP req m $ \resp -> do
+    when (Pipes.HTTP.responseStatus resp /= status200) $ error $ show $ Pipes.HTTP.responseStatus resp
     let cl = contentLength (Pipes.HTTP.responseHeaders resp) :: Maybe FileLength
     existingSize <-
       (Just <$> getFileSize file) `catch`
