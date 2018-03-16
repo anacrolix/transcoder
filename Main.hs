@@ -10,7 +10,7 @@ import Control.Exception
 import Control.Monad
 import Control.Monad.Reader
 import Control.Monad.Trans.Except
-import Crypto.Hash.MD5 as MD5
+import qualified Crypto.Hash.MD5 as MD5
 import Data.Aeson
 import Data.ByteString as B
 import qualified Data.ByteString.Char8 as C
@@ -65,9 +65,11 @@ type ServerRequest = Wai.Request
 
 type EventChan = SkipChan ()
 
+type RefCount = Integer
+
 data Transcoder = Transcoder
   { active :: TVar (Map.Map OpId Progress)
-  , events :: TVar (Map.Map OpId EventChan)
+  , events :: TVar (Map.Map OpId (RefCount, EventChan))
   , progressListenerAddr :: String
   }
 
@@ -97,18 +99,27 @@ app t req respond = do
   respond resp
 
 wsApp :: OperationEnv -> PendingConnection -> IO ()
-wsApp env pending_conn =
-  join $
-  (flip runReaderT) env $ do
-    t <- asks transcoder
-    oi <- asks target
-    lift $ do
-      conn <- acceptRequest pending_conn
-      es <- dupEvents t oi
-      forever $ do
-        p <- getProgress oi t
-        sendTextData conn $ encode p
-        getSkipChan es
+wsApp env pending_conn = do
+  conn <- acceptRequest pending_conn
+  es <- dupEvents t oi
+  let relayProgress =
+        forever $ do
+          p <- getProgress oi t
+          sendTextData conn $ encode p
+          getSkipChan es
+  relayProgress `finally` decEvents t oi
+  where
+    t = transcoder env
+    oi = target env
+
+decEvents :: Transcoder -> OpId -> IO ()
+decEvents t oi =
+  atomically $
+  modifyTVar' (events t) $
+  (flip Map.update) oi $ \(rc, ec) ->
+    if rc == 1
+      then Nothing
+      else Just (rc - 1, ec)
 
 dupEvents :: Transcoder -> OpId -> IO EventChan
 dupEvents t oi = do
@@ -116,11 +127,12 @@ dupEvents t oi = do
   join $
     atomically $ do
       m <- readTVar $ events t
-      case Map.lookup oi m of
-        Just existing -> return $ dupSkipChan existing
-        Nothing -> do
-          writeTVar (events t) $ Map.insert oi newValue m
-          return $ return newValue
+      let (ret, m') =
+            case Map.lookup oi m of
+              Nothing -> (return newValue, Map.insert oi (1, newValue) m)
+              Just (rc, es) -> (dupSkipChan es, Map.insert oi (rc + 1, es) m)
+      writeTVar (events t) m'
+      return ret
 
 badParam :: ByteString -> Wai.Response
 badParam name =
@@ -181,7 +193,7 @@ onProgressEvent oi t = do
   m <- readTVarIO $ events t
   case Map.lookup oi m of
     Nothing -> return ()
-    Just ec -> putSkipChan ec ()
+    Just (_, ec) -> putSkipChan ec ()
 
 {-# NOINLINE devNull #-}
 devNull =
@@ -231,7 +243,7 @@ download env progress = do
     let cl = contentLength (Pipes.HTTP.responseHeaders resp) :: Maybe FileLength
     existingSize <-
       (Just <$> getFileSize file) `catch`
-      (\(_::IOException) -> return Nothing)
+      (\(_ :: IOException) -> return Nothing)
     let complete = fromMaybe False $ (==) <$> cl <*> existingSize
     let bytesProgress fl =
           progress $
@@ -298,7 +310,7 @@ getOutputName i opts f =
   f
 
 hashStrings :: [ByteString] -> ByteString
-hashStrings = updates MD5.init >>> finalize
+hashStrings = MD5.updates MD5.init >>> MD5.finalize
 
 data Progress = Progress
   { ready :: Bool
