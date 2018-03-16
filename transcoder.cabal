@@ -33,4 +33,5 @@ executable transcoder
     mtl,
     streaming,
     streaming-bytestring,
-    streaming-wai
+    streaming-wai,
+    hslogger
