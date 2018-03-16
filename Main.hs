@@ -2,6 +2,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE DisambiguateRecordFields #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE LambdaCase #-}
 
 import Control.Arrow ((>>>))
 import Control.Concurrent
@@ -39,8 +40,10 @@ import SkipChan
 import Streaming as S
 import qualified Streaming.Prelude as S
 import System.Directory
+import System.Exit (ExitCode(..))
 import System.IO
 import System.IO.Unsafe
+import System.Log.Logger
 import System.Process
 
 progressAppPort = 3001
@@ -205,26 +208,29 @@ transcode env = do
   bracket_
     (up $ \p -> p {downloading = True})
     (up $ \p -> p {downloading = False})
-    (let onDownloadProgress f = do
-           up $ \p -> p {progressDownloadProgress = f}
-     in download env onDownloadProgress)
+    (download env onDownloadProgress)
   forkIO $ getDuration env
-  onException
-    (bracket_
-       (up $ \p -> p {converting = True})
-       (up $ \p -> p {converting = False})
-       (withFile (target env <> ".log") WriteMode $ \logFile ->
+  let runTranscode =
+        withFile (target env <> ".log") WriteMode $ \logFile ->
           withCreateProcess
             (proc (List.head args) (List.tail args))
             { std_err = UseHandle logFile
             , std_out = UseHandle logFile
             , std_in = UseHandle devNull
-            } $ \_ _ _ ph -> void $ waitForProcess ph))
-    (removeFileIfExists $ target env)
-     -- `finally` removeFileIfExists (inputFile env)
+            } $ \_ _ _ ph -> waitForProcess ph
+  (bracket_
+     (up $ \p -> p {converting = True})
+     (up $ \p -> p {converting = False})
+     (runTranscode >>= \case
+        ExitSuccess -> removeFile $ inputFile env
+        ExitFailure code -> do
+          warningM "transcode" $
+            "process " <> show args <> " failed with exit code " <> show code
+          (removeFileIfExists $ target env)))
   where
     args = ffmpegArgs env
     up = updateProgress (target env) (transcoder env)
+    onDownloadProgress f = up $ \p -> p {progressDownloadProgress = f}
 
 removeFileIfExists :: FilePath -> IO ()
 removeFileIfExists file = doesFileExist file >>= flip when (removeFile file)
