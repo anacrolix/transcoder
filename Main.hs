@@ -3,14 +3,17 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 import Control.Arrow ((>>>))
 import Control.Concurrent
 import Control.Concurrent.STM
 import Control.Exception
+import Control.Lens
 import Control.Monad
 import Control.Monad.Reader
 import Control.Monad.Trans.Except
+import Control.Monad.Trans.Resource (ResourceT, runResourceT)
 import qualified Crypto.Hash.MD5 as MD5
 import Data.Aeson
 import Data.ByteString as B
@@ -24,7 +27,6 @@ import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Maybe
 import Data.Monoid
-import Debug.Trace
 import qualified FFmpeg
 import GHC.Generics
 import Network.HTTP.Types
@@ -41,27 +43,55 @@ import Streaming as S
 import qualified Streaming.Prelude as S
 import System.Directory
 import System.Exit (ExitCode(..))
+import System.FilePath ((</>))
 import System.IO
 import System.IO.Unsafe
+import System.Log.Formatter
+import System.Log.Handler
+import System.Log.Handler.Simple
 import System.Log.Logger
 import System.Process
 
+data Progress = Progress
+  { _ready :: Bool
+  , _downloading :: Bool
+  , _progressDownloadProgress :: Float
+  , _probing :: Bool
+  , _converting :: Bool
+  , _convertPos :: Integer
+  , _storing :: Bool
+  , _inputDuration :: Integer
+  } deriving (Generic, Show)
+
+makeLenses ''Progress
+
+progressAppPort :: Port
 progressAppPort = 3001
 
-main :: IO ()
-main = do
+main :: IO () = do
+  h <-
+    streamHandler stderr DEBUG >>= \h ->
+      return $
+      setFormatter h $ simpleLogFormatter "[$time $loggername/$prio] $msg"
+  updateGlobalLogger rootLoggerName $ clearLevel . setHandlers [h]
+  debugM rootLoggerName "started main"
   t <- newTranscoder
-  forkIO $
+  forkIO $ do
+    debugM rootLoggerName $
+      "progress server starting on port " <> show progressAppPort
     Warp.runSettings
       (setTimeout 10000 . setPort progressAppPort $ defaultSettings) $
-    progressApp $ \id pos -> updateProgress id t $ \p -> p {convertPos = pos}
-  Warp.run 3000 $ app t
+      progressApp $ \id pos -> updateProgress id t $ \p -> p {_convertPos = pos}
+  infoM rootLoggerName $ "starting main http server on port " <> show mainPort
+  Warp.run mainPort $ app t
+  where
+    mainPort = 3000
 
 newTranscoder :: IO Transcoder
 newTranscoder = do
   a <- newTVarIO Map.empty
   es <- newTVarIO Map.empty
-  return $ Transcoder a es $ "localhost:" <> show progressAppPort
+  return $ Transcoder a es ("localhost:" <> show progressAppPort) newSimpleStore
 
 type OpId = FilePath
 
@@ -75,6 +105,7 @@ data Transcoder = Transcoder
   { active :: TVar (Map.Map OpId Progress)
   , events :: TVar (Map.Map OpId (RefCount, EventChan))
   , progressListenerAddr :: String
+  , store :: Store
   }
 
 data OperationEnv = OperationEnv
@@ -96,7 +127,7 @@ progressUrl env =
 
 app :: Transcoder -> Application
 app t req respond = do
-  traceIO $
+  infoM rootLoggerName $
     "serving " <> (show $ isWebSocketsReq req) <> " " <>
     C.unpack (rawPathInfo req <> rawQueryString req)
   resp <- serveTranscode t req
@@ -151,7 +182,7 @@ getProgress op t = do
       ready <- doesFileExist op
       return $
         if ready
-          then defaultProgress {ready = True}
+          then defaultProgress {_ready = True}
           else defaultProgress
 
 serveTranscode :: Transcoder -> ServerRequest -> IO Wai.Response
@@ -165,7 +196,7 @@ serveTranscode t req =
       Nothing ->
         lift $
         bracket_ (claimOp env) (releaseOp env) $ do
-          ready <- doesFileExist $ target env
+          ready <- store t & have $ target env
           unless ready $ transcode env
           -- Warp seems to handle the file parts for us if we pass Nothing.
           return $ responseFile status200 [] (target env) Nothing
@@ -200,16 +231,19 @@ onProgressEvent oi t = do
     Just (_, ec) -> putSkipChan ec ()
 
 {-# NOINLINE devNull #-}
+devNull :: Handle
 devNull =
-  unsafePerformIO $
-  trace "opening /dev/null" $ openFile "/dev/null" ReadWriteMode
+  unsafePerformIO $ do
+    warningM rootLoggerName "opening /dev/null"
+    openFile "/dev/null" ReadWriteMode
+
+withProgressFlag env f a = bracket_ (up $ set f True) (up $ set f False) a
+  where
+    up = updateProgress (target env) (transcoder env)
 
 transcode :: OperationEnv -> IO ()
 transcode env = do
-  bracket_
-    (up $ \p -> p {downloading = True})
-    (up $ \p -> p {downloading = False})
-    (download env onDownloadProgress)
+  withProgressFlag env downloading $ download env onDownloadProgress
   forkIO $ getDuration env
   let runTranscode =
         withFile (target env <> ".log") WriteMode $ \logFile ->
@@ -219,23 +253,25 @@ transcode env = do
             , std_out = UseHandle logFile
             , std_in = UseHandle devNull
             } $ \_ _ _ ph -> waitForProcess ph
-  (bracket_
-     (up $ \p -> p {converting = True})
-     (up $ \p -> p {converting = False})
-     (runTranscode >>= \case
-        ExitSuccess -> removeFile $ inputFile env
-        ExitFailure code -> do
-          warningM "transcode" $
-            "process " <> show args <> " failed with exit code " <> show code
-          (removeFileIfExists $ target env)))
+  withProgressFlag env converting $
+    runTranscode >>= \case
+      ExitSuccess -> do
+        let b = BS.readFile $ target env :: BS.ByteString (ResourceT IO) ()
+        (put . store . transcoder $ env) (target env) b
+        removeFile $ inputFile env
+      ExitFailure code -> do
+        warningM "transcode" $
+          "process " <> show args <> " failed with exit code " <> show code
+        (removeFileIfExists $ target env)
   where
     args = ffmpegArgs env
     up = updateProgress (target env) (transcoder env)
-    onDownloadProgress f = up $ \p -> p {progressDownloadProgress = f}
+    onDownloadProgress f = up $ \p -> p {_progressDownloadProgress = f}
 
 removeFileIfExists :: FilePath -> IO ()
 removeFileIfExists file = doesFileExist file >>= flip when (removeFile file)
 
+newHttpClientManager :: IO Manager
 newHttpClientManager = newManager defaultManagerSettings
 
 type FileLength = Integer
@@ -245,9 +281,10 @@ download env progress = do
   let file = inputFile env
   req <- parseRequest . C.unpack $ inputUrl env
   m <- newHttpClientManager
-  traceIO $ "downloading " <> file
+  infoM rootLoggerName $ "downloading " <> file
   withHTTP req m $ \resp -> do
-    when (Pipes.HTTP.responseStatus resp /= status200) $ error $ show $ Pipes.HTTP.responseStatus resp
+    when (Pipes.HTTP.responseStatus resp /= status200) $
+      error $ show $ Pipes.HTTP.responseStatus resp
     let cl = contentLength (Pipes.HTTP.responseHeaders resp) :: Maybe FileLength
     existingSize <-
       (Just <$> getFileSize file) `catch`
@@ -320,31 +357,25 @@ getOutputName i opts f =
 hashStrings :: [ByteString] -> ByteString
 hashStrings = MD5.updates MD5.init >>> MD5.finalize
 
-data Progress = Progress
-  { ready :: Bool
-  , downloading :: Bool
-  , progressDownloadProgress :: Float
-  , probing :: Bool
-  , converting :: Bool
-  , convertPos :: Integer
-  , inputDuration :: Integer
-  } deriving (Generic, Show)
-
 instance ToJSON Progress where
   toEncoding =
     genericToEncoding $
     defaultOptions
-    {fieldLabelModifier = (\(h:t) -> (toUpper h) : t) . trimPrefix "progress"}
+    { fieldLabelModifier =
+        (\(h:t) -> (toUpper h) : t) . trimPrefix "progress" . List.drop 1
+    }
 
+defaultProgress :: Progress
 defaultProgress =
   Progress
-  { ready = False
-  , downloading = False
-  , progressDownloadProgress = 0
-  , probing = False
-  , converting = False
-  , convertPos = 0
-  , inputDuration = 0
+  { _ready = False
+  , _downloading = False
+  , _progressDownloadProgress = 0
+  , _probing = False
+  , _converting = False
+  , _convertPos = 0
+  , _inputDuration = 0
+  , _storing = False
   }
 
 trimPrefix :: (Eq a) => [a] -> [a] -> [a]
@@ -372,13 +403,13 @@ progressApp f req respond = do
           act ss =
             case ss of
               ("out_time_ms":s:_) -> do
-                traceIO $ show ss
+                debugM "progress" $ id <> ": " <> show ss
                 f id $ 1000 * read s
               -- Maybe return Bool for continuation based on progress field
               _ -> return ()
       let sBody = BSC.fromChunks $ streamingRequest req :: BS.ByteString IO ()
           lines = BSC.lines $ sBody :: Stream (BS.ByteString IO) IO ()
-          bsLines = mapped BSC.toStrict lines :: Stream (Of ByteString) IO ()
+          bsLines = S.mapped BSC.toStrict lines :: Stream (Of ByteString) IO ()
           sLines =
             S.map (fmap C.unpack . C.split '=') bsLines :: Stream (Of [String]) IO ()
       -- BSC.stdout sBody
@@ -392,4 +423,17 @@ getDuration env = do
     Nothing -> return ()
     Just d ->
       updateProgress (target env) (transcoder env) $ \p ->
-        p {inputDuration = ceiling $ d * 1e9}
+        p {_inputDuration = ceiling $ d * 1e9}
+
+data Store = Store
+  { put :: OpId -> BS.ByteString (ResourceT IO) () -> IO ()
+  , get :: OpId -> BS.ByteString (ResourceT IO) ()
+  , have :: OpId -> IO Bool
+  }
+
+newSimpleStore =
+  Store
+  { put = \id bs -> runResourceT $ BS.writeFile ("simple" </> id) bs
+  , get = \id -> BS.readFile ("simple" </> id)
+  , have = \id -> doesFileExist ("simple" </> id)
+  }

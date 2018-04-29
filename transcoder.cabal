@@ -11,6 +11,7 @@ executable transcoder
   other-modules: SkipChan, FFmpeg
   ghc-options: -Wall -Wno-missing-signatures -Wno-name-shadowing -Wno-unused-do-bind -threaded
   build-depends:
+    lens,
     base,
     wai,
     warp,
@@ -34,4 +35,6 @@ executable transcoder
     streaming,
     streaming-bytestring,
     streaming-wai,
-    hslogger
+    hslogger,
+    resourcet,
+    filepath
