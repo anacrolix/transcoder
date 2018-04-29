@@ -81,7 +81,7 @@ main :: IO () = do
       "progress server starting on port " <> show progressAppPort
     Warp.runSettings
       (setTimeout 10000 . setPort progressAppPort $ defaultSettings) $
-      progressApp $ \id pos -> updateProgress id t $ \p -> p {_convertPos = pos}
+      progressApp $ \id pos -> updateProgress id t $ set convertPos pos
   infoM rootLoggerName $ "starting main http server on port " <> show mainPort
   Warp.run mainPort $ app t
   where
@@ -179,10 +179,10 @@ getProgress op t = do
   case Map.lookup op ps of
     Just p -> return p
     Nothing -> do
-      ready <- doesFileExist op
+      _ready <- doesFileExist op
       return $
-        if ready
-          then defaultProgress {_ready = True}
+        if _ready
+          then set ready True defaultProgress
           else defaultProgress
 
 serveTranscode :: Transcoder -> ServerRequest -> IO Wai.Response
@@ -266,7 +266,7 @@ transcode env = do
   where
     args = ffmpegArgs env
     up = updateProgress (target env) (transcoder env)
-    onDownloadProgress f = up $ \p -> p {_progressDownloadProgress = f}
+    onDownloadProgress = up . set progressDownloadProgress
 
 removeFileIfExists :: FilePath -> IO ()
 removeFileIfExists file = doesFileExist file >>= flip when (removeFile file)
@@ -422,8 +422,8 @@ getDuration env = do
   case md of
     Nothing -> return ()
     Just d ->
-      updateProgress (target env) (transcoder env) $ \p ->
-        p {_inputDuration = ceiling $ d * 1e9}
+      updateProgress (target env) (transcoder env) $
+      set inputDuration $ ceiling $ d * 1e9
 
 data Store = Store
   { put :: OpId -> BS.ByteString (ResourceT IO) () -> IO ()
