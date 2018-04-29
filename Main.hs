@@ -43,7 +43,7 @@ import Streaming as S
 import qualified Streaming.Prelude as S
 import System.Directory
 import System.Exit (ExitCode(..))
-import System.FilePath ((</>))
+import System.FilePath
 import System.IO
 import System.IO.Unsafe
 import System.Log.Formatter
@@ -52,6 +52,7 @@ import System.Log.Handler.Simple
 import System.Log.Logger
 import System.Process
 
+-- import Network.Wai.Handler.Warp.File
 data Progress = Progress
   { _ready :: Bool
   , _downloading :: Bool
@@ -198,8 +199,10 @@ serveTranscode t req =
         bracket_ (claimOp env) (releaseOp env) $ do
           ready <- store t & have $ target env
           unless ready $ transcode env
+          -- TODO: Take a streamingResponse from the store's get method.
           -- Warp seems to handle the file parts for us if we pass Nothing.
-          return $ responseFile status200 [] (target env) Nothing
+          return $
+            responseFile status200 [] ((get . store) t $ target env) Nothing
   where
     qs = Wai.queryString req
     queryValue :: ByteString -> ExceptT Wai.Response IO ByteString
@@ -246,7 +249,7 @@ transcode env = do
   withProgressFlag env downloading $ download env onDownloadProgress
   forkIO $ getDuration env
   let runTranscode =
-        withFile (target env <> ".log") WriteMode $ \logFile ->
+        withFile logFilePath WriteMode $ \logFile ->
           withCreateProcess
             (proc (List.head args) (List.tail args))
             { std_err = UseHandle logFile
@@ -256,17 +259,25 @@ transcode env = do
   withProgressFlag env converting $
     runTranscode >>= \case
       ExitSuccess -> do
-        let b = BS.readFile $ target env :: BS.ByteString (ResourceT IO) ()
-        (put . store . transcoder $ env) (target env) b
-        removeFile $ inputFile env
+        storeFile transcodeFile
+        storeFile logFilePath
+        removeFile transcodeFile
+        removeFile _inputFile
+        removeFile logFilePath
       ExitFailure code -> do
         warningM "transcode" $
           "process " <> show args <> " failed with exit code " <> show code
-        (removeFileIfExists $ target env)
+        removeFileIfExists $ target env
   where
+    logFilePath = transcodeFile <> ".log"
+    _inputFile = inputFile env
+    transcodeFile = target env
     args = ffmpegArgs env
     up = updateProgress (target env) (transcoder env)
     onDownloadProgress = up . set progressDownloadProgress
+    storeFile id = do
+      debugM rootLoggerName $ "storing " <> id
+      (put . store . transcoder $ env) id $ BS.readFile id
 
 removeFileIfExists :: FilePath -> IO ()
 removeFileIfExists file = doesFileExist file >>= flip when (removeFile file)
@@ -427,13 +438,18 @@ getDuration env = do
 
 data Store = Store
   { put :: OpId -> BS.ByteString (ResourceT IO) () -> IO ()
-  , get :: OpId -> BS.ByteString (ResourceT IO) ()
+  -- TODO: This should return a streaming thingy.
+  , get :: OpId -> FilePath
   , have :: OpId -> IO Bool
   }
 
 newSimpleStore =
   Store
-  { put = \id bs -> runResourceT $ BS.writeFile ("simple" </> id) bs
-  , get = \id -> BS.readFile ("simple" </> id)
+  { put =
+      \id bs -> do
+        let filePath = "simple" </> id
+        createDirectoryIfMissing True $ takeDirectory filePath
+        runResourceT $ BS.writeFile filePath bs
+  , get = \id -> "simple" </> id
   , have = \id -> doesFileExist ("simple" </> id)
   }
