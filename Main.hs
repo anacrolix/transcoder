@@ -180,7 +180,7 @@ getProgress op t = do
   case Map.lookup op ps of
     Just p -> return p
     Nothing -> do
-      _ready <- doesFileExist op
+      _ready <- store t & have $ op
       return $
         if _ready
           then set ready True defaultProgress
