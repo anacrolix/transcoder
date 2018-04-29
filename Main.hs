@@ -1,8 +1,8 @@
 {-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE DisambiguateRecordFields #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 import Control.Arrow ((>>>))
 import Control.Concurrent
@@ -57,6 +57,7 @@ main = do
     progressApp $ \id pos -> updateProgress id t $ \p -> p {convertPos = pos}
   Warp.run 3000 $ app t
 
+newTranscoder :: IO Transcoder
 newTranscoder = do
   a <- newTVarIO Map.empty
   es <- newTVarIO Map.empty
@@ -119,7 +120,7 @@ decEvents :: Transcoder -> OpId -> IO ()
 decEvents t oi =
   atomically $
   modifyTVar' (events t) $
-  (flip Map.update) oi $ \(rc, ec) ->
+  flip Map.update oi $ \(rc, ec) ->
     if rc == 1
       then Nothing
       else Just (rc - 1, ec)
@@ -264,7 +265,7 @@ download env progress = do
 
 contentLength :: ResponseHeaders -> Maybe FileLength
 contentLength hs =
-  read <$> C.unpack <$> snd <$> List.find (\(n, _) -> n == hContentLength) hs
+  (read . C.unpack . snd) <$> List.find (\(n, _) -> n == hContentLength) hs
 
 downloadProgress :: (FileLength -> IO ()) -> Pipe ByteString ByteString IO ()
 downloadProgress pos = go 0
@@ -275,7 +276,7 @@ downloadProgress pos = go 0
       let next = last + step
       lift $ pos next
       Pipes.yield bs
-      go $ next
+      go next
 
 ffmpegArgs :: OperationEnv -> [String]
 ffmpegArgs env =
@@ -356,6 +357,7 @@ trimPrefix p list =
     take = List.take
     drop = List.drop
 
+-- This is the request site for ffmpeg's progress parameter.
 progressApp :: (OpId -> Integer -> IO ()) -> Application
 progressApp f req respond = do
   let id =
@@ -367,7 +369,7 @@ progressApp f req respond = do
       -- TODO: This doesn't seem to work?
       pauseTimeout req
       let act :: [String] -> IO ()
-          act ss = do
+          act ss =
             case ss of
               ("out_time_ms":s:_) -> do
                 traceIO $ show ss
