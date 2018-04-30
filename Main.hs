@@ -1,4 +1,3 @@
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DisambiguateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -28,7 +27,6 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe
 import Data.Monoid
 import qualified FFmpeg
-import GHC.Generics
 import Network.HTTP.Types
 import Network.Wai as Wai
 import Network.Wai.Handler.Warp as Warp
@@ -38,6 +36,7 @@ import Network.WebSockets.Connection
 import Pipes
 import Pipes.ByteString as PB
 import Pipes.HTTP
+import Progress
 import SkipChan
 import Streaming as S
 import qualified Streaming.Prelude as S
@@ -53,19 +52,6 @@ import System.Log.Logger
 import System.Process
 
 -- import Network.Wai.Handler.Warp.File
-data Progress = Progress
-  { _ready :: Bool
-  , _downloading :: Bool
-  , _progressDownloadProgress :: Float
-  , _probing :: Bool
-  , _converting :: Bool
-  , _convertPos :: Integer
-  , _storing :: Bool
-  , _inputDuration :: Integer
-  } deriving (Generic, Show)
-
-makeLenses ''Progress
-
 progressAppPort :: Port
 progressAppPort = 3001
 
@@ -367,37 +353,6 @@ getOutputName i opts f =
 
 hashStrings :: [ByteString] -> ByteString
 hashStrings = MD5.updates MD5.init >>> MD5.finalize
-
-instance ToJSON Progress where
-  toEncoding =
-    genericToEncoding $
-    defaultOptions
-    { fieldLabelModifier =
-        (\(h:t) -> (toUpper h) : t) . trimPrefix "progress" . List.drop 1
-    }
-
-defaultProgress :: Progress
-defaultProgress =
-  Progress
-  { _ready = False
-  , _downloading = False
-  , _progressDownloadProgress = 0
-  , _probing = False
-  , _converting = False
-  , _convertPos = 0
-  , _inputDuration = 0
-  , _storing = False
-  }
-
-trimPrefix :: (Eq a) => [a] -> [a] -> [a]
-trimPrefix p list =
-  if take len list == p
-    then drop len list
-    else list
-  where
-    len = List.length p
-    take = List.take
-    drop = List.drop
 
 -- This is the request site for ffmpeg's progress parameter.
 progressApp :: (OpId -> Integer -> IO ()) -> Application
