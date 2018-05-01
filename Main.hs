@@ -3,16 +3,18 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE PartialTypeSignatures #-}
 
 import Control.Arrow ((>>>))
 import Control.Concurrent
+import Control.Concurrent.Lock as Lock
 import Control.Concurrent.STM
 import Control.Exception
 import Control.Lens
 import Control.Monad
 import Control.Monad.Reader
 import Control.Monad.Trans.Except
-import Control.Monad.Trans.Resource (ResourceT, runResourceT)
+import Control.Monad.Trans.Resource as Resource
 import qualified Crypto.Hash.MD5 as MD5
 import Data.Aeson
 import Data.ByteString as B
@@ -78,7 +80,14 @@ newTranscoder :: IO Transcoder
 newTranscoder = do
   a <- newTVarIO Map.empty
   es <- newTVarIO Map.empty
-  return $ Transcoder a es ("localhost:" <> show progressAppPort) newSimpleStore
+  transcodeLock <- new
+  return $
+    Transcoder
+      a
+      es
+      ("localhost:" <> show progressAppPort)
+      newSimpleStore
+      transcodeLock
 
 type OpId = FilePath
 
@@ -93,6 +102,7 @@ data Transcoder = Transcoder
   , events :: TVar (Map.Map OpId (RefCount, EventChan))
   , progressListenerAddr :: String
   , store :: Store
+  , transcodeLock :: Lock
   }
 
 data OperationEnv = OperationEnv
@@ -228,7 +238,9 @@ devNull =
 
 withProgressFlag env f a = bracket_ (up $ set f True) (up $ set f False) a
   where
-    up = updateProgress (target env) (transcoder env)
+    up = updateProgressEnv env
+
+updateProgressEnv env = updateProgress (target env) (transcoder env)
 
 transcode :: OperationEnv -> IO ()
 transcode env = do
@@ -243,17 +255,24 @@ transcode env = do
             , std_in = UseHandle devNull
             } $ \_ _ _ ph -> waitForProcess ph
   withProgressFlag env converting $
-    runTranscode >>= \case
-      ExitSuccess -> do
-        storeFile transcodeFile
-        storeFile logFilePath
-        removeFile transcodeFile
-        removeFile _inputFile
-        removeFile logFilePath
-      ExitFailure code -> do
-        warningM "transcode" $
-          "process " <> show args <> " failed with exit code " <> show code
-        removeFileIfExists $ target env
+    runResourceT $ do
+      queued <- allocateProgressFlag env queued
+      allocate
+        (acquire $ transcodeLock . transcoder $ env)
+        (\_ -> Lock.release $ transcodeLock . transcoder $ env)
+      Resource.release queued
+      liftIO $
+        runTranscode >>= \case
+          ExitSuccess -> do
+            storeFile transcodeFile
+            storeFile logFilePath
+            removeFile transcodeFile
+            removeFile _inputFile
+            removeFile logFilePath
+          ExitFailure code -> do
+            warningM "transcode" $
+              "process " <> show args <> " failed with exit code " <> show code
+            removeFileIfExists $ target env
   where
     logFilePath = transcodeFile <> ".log"
     _inputFile = inputFile env
@@ -264,6 +283,13 @@ transcode env = do
     storeFile id = do
       debugM rootLoggerName $ "storing " <> id
       (put . store . transcoder $ env) id $ BS.readFile id
+
+allocateProgressFlag :: OperationEnv -> _ -> ResourceT IO ReleaseKey
+allocateProgressFlag env flag =
+  fst <$>
+  allocate
+    (updateProgressEnv env (set flag True))
+    (\_ -> updateProgressEnv env (set flag False))
 
 removeFileIfExists :: FilePath -> IO ()
 removeFileIfExists file = doesFileExist file >>= flip when (removeFile file)

@@ -37,4 +37,5 @@ executable transcoder
     streaming-wai,
     hslogger,
     resourcet,
-    filepath
+    filepath,
+    concurrent-extra
