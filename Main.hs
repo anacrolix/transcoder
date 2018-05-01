@@ -134,11 +134,13 @@ wsApp :: OperationEnv -> PendingConnection -> IO ()
 wsApp env pending_conn = do
   conn <- acceptRequest pending_conn
   es <- dupEvents t oi
-  let relayProgress =
-        forever $ do
-          p <- getProgress oi t
-          sendTextData conn $ encode p
-          getSkipChan es
+  let relayProgress = go Nothing
+        where
+          go last = do
+            p <- getProgress oi t
+            when (fromMaybe True $ (/= p) <$> last) $
+              sendTextData conn $ encode p
+            getSkipChan es
   relayProgress `finally` decEvents t oi
   where
     t = transcoder env

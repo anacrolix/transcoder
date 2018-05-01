@@ -17,8 +17,8 @@ data Progress = Progress
   , _convertPos :: Integer
   , _storing :: Bool
   , _inputDuration :: Integer
-  } deriving (Generic, Show)
   , _queued :: Bool
+  } deriving (Generic, Show, Eq)
 
 makeLenses ''Progress
 
