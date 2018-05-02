@@ -42,6 +42,7 @@ defaultProgress =
   , _convertPos = 0
   , _inputDuration = 0
   , _storing = False
+  , _queued = False
   }
 
 trimPrefix :: (Eq a) => [a] -> [a] -> [a]
