@@ -7,6 +7,8 @@ import           Control.Lens
 import           Data.Aeson
 import           Data.Aeson.Types
 import           Data.Char
+import           Data.List
+import           Data.Maybe
 import           GHC.Generics
 
 data Progress = Progress
@@ -45,10 +47,4 @@ defaultProgress =
   , _queued = False
   }
 
-trimPrefix :: (Eq a) => [a] -> [a] -> [a]
-trimPrefix p list =
-  if take len list == p
-    then drop len list
-    else list
-  where
-    len = length p
+trimPrefix p = fromMaybe <*> stripPrefix p
