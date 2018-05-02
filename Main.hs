@@ -3,7 +3,6 @@
 {-# LANGUAGE OverloadedStrings        #-}
 {-# LANGUAGE PartialTypeSignatures    #-}
 {-# LANGUAGE ScopedTypeVariables      #-}
-{-# LANGUAGE TemplateHaskell          #-}
 
 import           Control.Arrow                   ((>>>))
 import           Control.Concurrent
@@ -123,7 +122,7 @@ progressUrl env =
 app :: Transcoder -> Application
 app t req respond = do
   infoM rootLoggerName $
-    "serving " <> (show $ isWebSocketsReq req) <> " " <>
+    "serving " <> show (isWebSocketsReq req) <> " " <>
     C.unpack (rawPathInfo req <> rawQueryString req)
   resp <- serveTranscode t req
   respond resp
@@ -136,8 +135,7 @@ wsApp env pending_conn = do
         where
           go last = do
             p <- getProgress oi t
-            when (fromMaybe True $ (/= p) <$> last) $
-              sendTextData conn $ encode p
+            when (last /= Just p) $ sendTextData conn $ encode p
             getSkipChan es
             go $ Just p
   relayProgress `finally` decEvents t oi
@@ -237,7 +235,7 @@ devNull =
     warningM rootLoggerName "opening /dev/null"
     openFile "/dev/null" ReadWriteMode
 
-withProgressFlag env f a = bracket_ (up $ set f True) (up $ set f False) a
+withProgressFlag env f = bracket_ (up $ set f True) (up $ set f False)
   where
     up = updateProgressEnv env
 
@@ -292,7 +290,7 @@ allocateProgressFlag env flag =
     (updateProgressEnv env (set flag True))
     (updateProgressEnv env (set flag False))
 
-allocate_ a f = allocate a (\_ -> f)
+allocate_ a f = allocate a (const f)
 
 removeFileIfExists :: FilePath -> IO ()
 removeFileIfExists file = doesFileExist file >>= flip when (removeFile file)
@@ -311,8 +309,8 @@ download env progress = do
   withHTTP req m $ \resp -> do
     when (Http.Client.responseStatus resp /= status200) $
       error $ show $ Http.Client.responseStatus resp
-    let cl =
-          contentLength (Http.Client.responseHeaders resp) :: Maybe FileLength
+    let cl :: Maybe FileLength =
+          contentLength (Http.Client.responseHeaders resp)
     existingSize <-
       (Just <$> getFileSize file) `catch`
       (\(_ :: IOException) -> return Nothing)
@@ -331,7 +329,7 @@ download env progress = do
         (downloadProgress bytesProgress)
         (return 0)
         (\_ -> return ()) $
-      BS.writeFile file $ BS.copy $ body
+      BS.writeFile file $ BS.copy body
 
 contentLength :: ResponseHeaders -> Maybe FileLength
 contentLength hs =
@@ -344,7 +342,7 @@ downloadProgress ::
   -> ByteString
   -> m FileLength
 downloadProgress update lastPos bs = do
-  let newPos = lastPos + (fromIntegral $ B.length bs)
+  let newPos = lastPos + fromIntegral (B.length bs)
   liftIO $ update newPos
   return newPos
 
@@ -410,7 +408,7 @@ progressApp f req respond = do
               -- Maybe return Bool for continuation based on progress field
               _ -> return ()
       let sBody = BSC.fromChunks $ streamingRequest req :: BS.ByteString IO ()
-          lines = BSC.lines $ sBody :: Stream (BS.ByteString IO) IO ()
+          lines = BSC.lines sBody :: Stream (BS.ByteString IO) IO ()
           bsLines = S.mapped BSC.toStrict lines :: Stream (Of ByteString) IO ()
           sLines =
             S.map (fmap C.unpack . C.split '=') bsLines :: Stream (Of [String]) IO ()
