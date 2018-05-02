@@ -295,6 +295,7 @@ allocate_ a f = allocate a (const f)
 removeFileIfExists :: FilePath -> IO ()
 removeFileIfExists file = doesFileExist file >>= flip when (removeFile file)
 
+-- TODO: create this once
 newHttpClientManager :: IO Manager
 newHttpClientManager = newManager defaultManagerSettings
 
@@ -306,7 +307,9 @@ download env progress = do
   req <- parseRequest . C.unpack $ inputUrl env
   m <- newHttpClientManager
   infoM rootLoggerName $ "downloading " <> file
-  withHTTP req m $ \resp -> do
+  withHTTP req m $ \resp
+    -- TODO: Resume from where we're upto instead.
+   -> do
     when (Http.Client.responseStatus resp /= status200) $
       error $ show $ Http.Client.responseStatus resp
     let cl :: Maybe FileLength =
