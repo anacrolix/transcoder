@@ -25,9 +25,6 @@ executable transcoder
     process,
     hex,
     transformers,
-    pipes-http,
-    pipes-bytestring,
-    pipes,
     aeson,
     wai-websockets,
     websockets,
@@ -38,4 +35,5 @@ executable transcoder
     hslogger,
     resourcet,
     filepath,
-    concurrent-extra
+    concurrent-extra,
+    streaming-utils

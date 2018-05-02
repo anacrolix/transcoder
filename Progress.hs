@@ -1,23 +1,24 @@
+{-# LANGUAGE DeriveGeneric   #-}
 {-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE DeriveGeneric #-}
 
 module Progress where
 
-import Control.Lens
-import Data.Aeson
-import Data.Char
-import GHC.Generics
+import           Control.Lens
+import           Data.Aeson
+import           Data.Aeson.Types
+import           Data.Char
+import           GHC.Generics
 
 data Progress = Progress
-  { _ready :: Bool
-  , _downloading :: Bool
+  { _ready                    :: Bool
+  , _downloading              :: Bool
   , _progressDownloadProgress :: Float
-  , _probing :: Bool
-  , _converting :: Bool
-  , _convertPos :: Integer
-  , _storing :: Bool
-  , _inputDuration :: Integer
-  , _queued :: Bool
+  , _probing                  :: Bool
+  , _converting               :: Bool
+  , _convertPos               :: Integer
+  , _storing                  :: Bool
+  , _inputDuration            :: Integer
+  , _queued                   :: Bool
   } deriving (Generic, Show, Eq)
 
 makeLenses ''Progress

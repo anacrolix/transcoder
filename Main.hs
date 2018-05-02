@@ -1,57 +1,56 @@
 {-# LANGUAGE DisambiguateRecordFields #-}
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE PartialTypeSignatures #-}
+{-# LANGUAGE LambdaCase               #-}
+{-# LANGUAGE OverloadedStrings        #-}
+{-# LANGUAGE PartialTypeSignatures    #-}
+{-# LANGUAGE ScopedTypeVariables      #-}
+{-# LANGUAGE TemplateHaskell          #-}
 
-import Control.Arrow ((>>>))
-import Control.Concurrent
-import Control.Concurrent.Lock as Lock
-import Control.Concurrent.STM
-import Control.Exception
-import Control.Lens
-import Control.Monad
-import Control.Monad.Reader
-import Control.Monad.Trans.Except
-import Control.Monad.Trans.Resource as Resource
-import qualified Crypto.Hash.MD5 as MD5
-import Data.Aeson
-import Data.ByteString as B
-import qualified Data.ByteString.Char8 as C
-import qualified Data.ByteString.Lazy as LBS
-import qualified Data.ByteString.Streaming as BS
+import           Control.Arrow                   ((>>>))
+import           Control.Concurrent
+import           Control.Concurrent.Lock         as Lock
+import           Control.Concurrent.STM
+import           Control.Exception
+import           Control.Lens
+import           Control.Monad
+import           Control.Monad.Reader
+import           Control.Monad.Trans.Except
+import           Control.Monad.Trans.Resource    as Resource
+import qualified Crypto.Hash.MD5                 as MD5
+import           Data.Aeson
+import           Data.ByteString                 as B
+import qualified Data.ByteString.Char8           as C
+import qualified Data.ByteString.Lazy            as LBS
+import qualified Data.ByteString.Streaming       as BS
 import qualified Data.ByteString.Streaming.Char8 as BSC
-import Data.Char
-import Data.Hex
-import qualified Data.List as List
-import qualified Data.Map.Strict as Map
-import Data.Maybe
-import Data.Monoid
+import           Data.ByteString.Streaming.HTTP  as Http.Client
+import           Data.Char
+import           Data.Hex
+import qualified Data.List                       as List
+import qualified Data.Map.Strict                 as Map
+import           Data.Maybe
+import           Data.Monoid
+import           Debug.Trace
 import qualified FFmpeg
-import Network.HTTP.Types
-import Network.Wai as Wai
-import Network.Wai.Handler.Warp as Warp
-import Network.Wai.Handler.WebSockets
-import Network.Wai.Streaming
-import Network.WebSockets.Connection
-import Pipes
-import Pipes.ByteString as PB
-import Pipes.HTTP
-import Progress
-import SkipChan
-import Streaming as S
-import qualified Streaming.Prelude as S
-import System.Directory
-import System.Exit (ExitCode(..))
-import System.FilePath
-import System.IO
-import System.IO.Unsafe
-import System.Log.Formatter
-import System.Log.Handler
-import System.Log.Handler.Simple
-import System.Log.Logger
-import System.Process
+import           Network.HTTP.Types
+import           Network.Wai                     as Wai
+import           Network.Wai.Handler.Warp        as Warp
+import           Network.Wai.Handler.WebSockets
+import           Network.Wai.Streaming
+import           Network.WebSockets.Connection
+import           Progress
+import           SkipChan
+import           Streaming                       as S
+import qualified Streaming.Prelude               as S
+import           System.Directory
+import           System.Exit                     (ExitCode (..))
+import           System.FilePath
+import           System.IO
+import           System.IO.Unsafe
+import           System.Log.Formatter
+import           System.Log.Handler
+import           System.Log.Handler.Simple
+import           System.Log.Logger
+import           System.Process
 
 -- import Network.Wai.Handler.Warp.File
 progressAppPort :: Port
@@ -98,17 +97,17 @@ type EventChan = SkipChan ()
 type RefCount = Integer
 
 data Transcoder = Transcoder
-  { active :: TVar (Map.Map OpId Progress)
-  , events :: TVar (Map.Map OpId (RefCount, EventChan))
+  { active               :: TVar (Map.Map OpId Progress)
+  , events               :: TVar (Map.Map OpId (RefCount, EventChan))
   , progressListenerAddr :: String
-  , store :: Store
-  , transcodeLock :: Lock
+  , store                :: Store
+  , transcodeLock        :: Lock
   }
 
 data OperationEnv = OperationEnv
-  { inputUrl :: ByteString
+  { inputUrl   :: ByteString
   , ffmpegOpts :: [ByteString]
-  , format :: ByteString
+  , format     :: ByteString
   , transcoder :: Transcoder
   }
 
@@ -216,7 +215,7 @@ runBreakT = fmap mergeEither . runExceptT
 mergeEither :: Either a a -> a
 mergeEither e =
   case e of
-    Left v -> v
+    Left v  -> v
     Right v -> v
 
 updateProgress :: OpId -> Transcoder -> (Progress -> Progress) -> IO ()
@@ -228,7 +227,7 @@ onProgressEvent :: OpId -> Transcoder -> IO ()
 onProgressEvent oi t = do
   m <- readTVarIO $ events t
   case Map.lookup oi m of
-    Nothing -> return ()
+    Nothing      -> return ()
     Just (_, ec) -> putSkipChan ec ()
 
 {-# NOINLINE devNull #-}
@@ -310,37 +309,44 @@ download env progress = do
   m <- newHttpClientManager
   infoM rootLoggerName $ "downloading " <> file
   withHTTP req m $ \resp -> do
-    when (Pipes.HTTP.responseStatus resp /= status200) $
-      error $ show $ Pipes.HTTP.responseStatus resp
-    let cl = contentLength (Pipes.HTTP.responseHeaders resp) :: Maybe FileLength
+    when (Http.Client.responseStatus resp /= status200) $
+      error $ show $ Http.Client.responseStatus resp
+    let cl =
+          contentLength (Http.Client.responseHeaders resp) :: Maybe FileLength
     existingSize <-
       (Just <$> getFileSize file) `catch`
       (\(_ :: IOException) -> return Nothing)
     let complete = fromMaybe False $ (==) <$> cl <*> existingSize
-    let bytesProgress fl =
+        bytesProgress fl =
           progress $
           case cl of
             Just total -> fromIntegral fl / fromIntegral total
-            Nothing -> 0.5
+            Nothing    -> 0.5
+        body :: BS.ByteString (ResourceT IO) () =
+          hoist liftIO $ responseBody resp
     unless complete $
-      withFile file WriteMode $ \out ->
-        runEffect $
-        responseBody resp >-> downloadProgress bytesProgress >-> PB.toHandle out
+      void $
+      runResourceT $
+      BS.chunkFoldM
+        (downloadProgress bytesProgress)
+        (return 0)
+        (\_ -> return ()) $
+      BS.writeFile file $ BS.copy $ body
 
 contentLength :: ResponseHeaders -> Maybe FileLength
 contentLength hs =
   (read . C.unpack . snd) <$> List.find (\(n, _) -> n == hContentLength) hs
 
-downloadProgress :: (FileLength -> IO ()) -> Pipe ByteString ByteString IO ()
-downloadProgress pos = go 0
-  where
-    go last = do
-      bs <- await
-      let step = fromIntegral $ B.length bs
-      let next = last + step
-      lift $ pos next
-      Pipes.yield bs
-      go next
+downloadProgress ::
+     MonadIO m
+  => (FileLength -> IO ())
+  -> FileLength
+  -> ByteString
+  -> m FileLength
+downloadProgress update lastPos bs = do
+  let newPos = lastPos + (fromIntegral $ B.length bs)
+  liftIO $ update newPos
+  return newPos
 
 ffmpegArgs :: OperationEnv -> [String]
 ffmpegArgs env =
@@ -422,9 +428,9 @@ getDuration env = do
       set inputDuration $ ceiling $ d * 1e9
 
 data Store = Store
-  { put :: OpId -> BS.ByteString (ResourceT IO) () -> IO ()
+  { put  :: OpId -> BS.ByteString (ResourceT IO) () -> IO ()
   -- TODO: This should return a streaming thingy.
-  , get :: OpId -> FilePath
+  , get  :: OpId -> FilePath
   , have :: OpId -> IO Bool
   }
 
