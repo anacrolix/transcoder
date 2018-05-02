@@ -30,7 +30,7 @@ instance ToJSON Progress where
     genericToEncoding $
     defaultOptions
     { fieldLabelModifier =
-        (\(h:t) -> (toUpper h) : t) . trimPrefix "progress" . drop 1
+        (\(h:t) -> toUpper h : t) . trimPrefix "progress" . drop 1
     }
 
 defaultProgress :: Progress
