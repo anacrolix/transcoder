@@ -29,7 +29,6 @@ import qualified Data.List                       as List
 import qualified Data.Map.Strict                 as Map
 import           Data.Maybe
 import           Data.Monoid
-import           Debug.Trace
 import qualified FFmpeg
 import           Network.HTTP.Types
 import           Network.Wai                     as Wai
