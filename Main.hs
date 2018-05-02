@@ -139,6 +139,7 @@ wsApp env pending_conn = do
             when (fromMaybe True $ (/= p) <$> last) $
               sendTextData conn $ encode p
             getSkipChan es
+            go $ Just p
   relayProgress `finally` decEvents t oi
   where
     t = transcoder env
