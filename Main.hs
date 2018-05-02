@@ -259,9 +259,9 @@ transcode env = do
   withProgressFlag env converting $
     runResourceT $ do
       queued <- allocateProgressFlag env queued
-      allocate
+      allocate_
         (acquire $ transcodeLock . transcoder $ env)
-        (\_ -> Lock.release $ transcodeLock . transcoder $ env)
+        (Lock.release $ transcodeLock . transcoder $ env)
       Resource.release queued
       liftIO $
         runTranscode >>= \case
@@ -289,9 +289,11 @@ transcode env = do
 allocateProgressFlag :: OperationEnv -> _ -> ResourceT IO ReleaseKey
 allocateProgressFlag env flag =
   fst <$>
-  allocate
+  allocate_
     (updateProgressEnv env (set flag True))
-    (\_ -> updateProgressEnv env (set flag False))
+    (updateProgressEnv env (set flag False))
+
+allocate_ a f = allocate a (\_ -> f)
 
 removeFileIfExists :: FilePath -> IO ()
 removeFileIfExists file = doesFileExist file >>= flip when (removeFile file)
