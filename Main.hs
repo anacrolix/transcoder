@@ -196,8 +196,7 @@ serveTranscode t req respond = do
           -- TODO: Take a streamingResponse from the store's get method.
           -- Warp seems to handle the file parts for us if we pass Nothing.
           let body :: Stream (Of ByteString) (ResourceT IO) () = BS.toChunks $ (get . store $ t) (target env) 0
-          runResourceT $ do
-            liftIO $ respond $ streamingResponse body status200 []
+          respond $ streamingResponse (hoist runResourceT body) status200 []
   case e of
     Left r   -> respond r
     Right rr -> rr
