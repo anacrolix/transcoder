@@ -28,6 +28,7 @@ import qualified Data.List                       as List
 import qualified Data.Map.Strict                 as Map
 import           Data.Maybe
 import           Data.Monoid
+import           Extra
 import qualified FFmpeg
 import           Network.HTTP.Types
 import           Network.Wai                     as Wai
@@ -124,8 +125,7 @@ app t req respond = do
   infoM rootLoggerName $
     "serving " <> show (isWebSocketsReq req) <> " " <>
     C.unpack (rawPathInfo req <> rawQueryString req)
-  resp <- serveTranscode t req
-  respond resp
+  serveTranscode t req respond
 
 wsApp :: OperationEnv -> PendingConnection -> IO ()
 wsApp env pending_conn = do
@@ -181,23 +181,26 @@ getProgress op t = do
           then set ready True defaultProgress
           else defaultProgress
 
-serveTranscode :: Transcoder -> ServerRequest -> IO Wai.Response
-serveTranscode t req =
-  runBreakT $ do
+serveTranscode :: Transcoder -> ServerRequest -> (Wai.Response -> IO ResponseReceived) -> IO Wai.ResponseReceived
+serveTranscode t req respond = do
+  e <- runExceptT $ do
     i <- queryValue "i"
     f <- queryValue "f"
     let env = OperationEnv i opts f t
-    case websocketsApp defaultConnectionOptions (wsApp env) req of
-      Just resp -> pure resp
+    pure $ case websocketsApp defaultConnectionOptions (wsApp env) req of
+      Just resp -> respond resp
       Nothing ->
-        lift $
         bracket_ (claimOp env) (releaseOp env) $ do
           ready <- store t & have $ target env
           unless ready $ transcode env
           -- TODO: Take a streamingResponse from the store's get method.
           -- Warp seems to handle the file parts for us if we pass Nothing.
-          return $
-            responseFile status200 [] ((get . store) t $ target env) Nothing
+          let body :: Stream (Of ByteString) (ResourceT IO) () = BS.toChunks $ (get . store $ t) (target env) 0
+          runResourceT $ do
+            liftIO $ respond $ streamingResponse body status200 []
+  case e of
+    Left r   -> respond r
+    Right rr -> rr
   where
     qs = Wai.queryString req
     queryValue :: ByteString -> ExceptT Wai.Response IO ByteString
@@ -431,7 +434,7 @@ getDuration env = do
 data Store = Store
   { put  :: OpId -> BS.ByteString (ResourceT IO) () -> IO ()
   -- TODO: This should return a streaming thingy.
-  , get  :: OpId -> FilePath
+  , get  :: OpId -> FileLength -> BS.ByteString (ResourceT IO) ()
   , have :: OpId -> IO Bool
   }
 
@@ -439,9 +442,9 @@ newSimpleStore =
   Store
   { put =
       \id bs -> do
-        let filePath = "simple" </> id
-        createDirectoryIfMissing True $ takeDirectory filePath
-        runResourceT $ BS.writeFile filePath bs
-  , get = \id -> "simple" </> id
-  , have = \id -> doesFileExist ("simple" </> id)
+        createDirectoryIfMissing True $ takeDirectory $ filePath id
+        runResourceT $ BS.writeFile (filePath id) bs
+  , get = \id off -> readFileFrom off $ filePath id
+  , have = \id -> doesFileExist $ filePath id
   }
+  where filePath = ("simple"</>)
