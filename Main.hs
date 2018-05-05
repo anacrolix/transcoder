@@ -122,7 +122,7 @@ target =
   OpId . C.unpack . (getOutputName <$> inputUrl <*> ffmpegOpts <*> format)
 
 inputFile :: OperationEnv -> FilePath
-inputFile env = (transcoder env & tmpDir) <> filePath (target env) <> ".input"
+inputFile env = (transcoder env & tmpDir) </> filePath (target env) <> ".input"
 
 progressUrl :: OperationEnv -> String
 progressUrl env =
@@ -342,7 +342,7 @@ transcode env = do
             removeFileIfExists transcodeFile
   where
     logFileId = OpId $ (target env & filePath) <> ".log"
-    logFilePath = (transcoder env & tmpDir) <> filePath logFileId
+    logFilePath = (transcoder env & tmpDir) </> filePath logFileId
     _inputFile = inputFile env
     transcodeFile = transcodeOutputPath env
     args = ffmpegArgs env
@@ -354,7 +354,7 @@ transcode env = do
       (put . store . transcoder $ env) id $ BS.readFile path
 
 transcodeOutputPath :: OperationEnv -> FilePath
-transcodeOutputPath env = (transcoder env & tmpDir) <> (target env & filePath)
+transcodeOutputPath env = (transcoder env & tmpDir) </> (target env & filePath)
 
 allocateProgressFlag :: OperationEnv -> _ -> ResourceT IO ReleaseKey
 allocateProgressFlag env flag =
@@ -426,9 +426,8 @@ ffmpegArgs :: OperationEnv -> [String]
 ffmpegArgs env =
   let i = inputFile env
       opts = List.map C.unpack . ffmpegOpts $ env
-      outputName = target env
    in ["nice", "ffmpeg", "-hide_banner", "-i", i] ++
-      opts ++ ["-progress", progressUrl env, "-y", filePath outputName]
+      opts ++ ["-progress", progressUrl env, "-y", transcodeOutputPath env]
 
 getFirstQueryValue :: ByteString -> Query -> Maybe ByteString
 getFirstQueryValue key = List.find (\(k, _) -> k == key) >>> fmap snd >>> join
