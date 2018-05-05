@@ -281,27 +281,6 @@ byteRangeBegin size =
     ByteRangeFromTo f _ -> f
     ByteRangeSuffix s -> size - s
 
-bytesRange :: Wai.Request -> FileLength -> (Integer, Integer)
-bytesRange r l =
-  maybe
-    (0, l)
-    (\case
-       ByteRangeFrom f -> (f, l - f)
-       ByteRangeFromTo f t -> (f, t - f + 1)
-       ByteRangeSuffix s -> (l - s, s))
-    (requestHeaderRange r >>= parseByteRanges >>= listToMaybe)
-
-type BreakT m a = ExceptT a m a
-
-runBreakT :: (Functor m) => BreakT m a -> m a
-runBreakT = fmap mergeEither . runExceptT
-
-mergeEither :: Either a a -> a
-mergeEither e =
-  case e of
-    Left v  -> v
-    Right v -> v
-
 updateProgress :: OpId -> Transcoder -> (Progress -> Progress) -> IO ()
 updateProgress k t f = do
   atomically $ modifyTVar' (active t) $ Map.update (Just . f) k
