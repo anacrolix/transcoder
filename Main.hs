@@ -86,8 +86,11 @@ newTranscoder = do
       ("localhost:" <> show progressAppPort)
       newSimpleStore
       transcodeLock
+      "tmp"
 
-type OpId = FilePath
+newtype OpId = OpId
+  { filePath :: FilePath
+  } deriving (Ord, Eq, Show)
 
 type ServerRequest = Wai.Request
 
@@ -101,6 +104,7 @@ data Transcoder = Transcoder
   , progressListenerAddr :: String
   , store                :: Store
   , transcodeLock        :: Lock
+  , tmpDir               :: FilePath
   }
 
 data OperationEnv = OperationEnv
@@ -111,14 +115,16 @@ data OperationEnv = OperationEnv
   }
 
 target :: OperationEnv -> OpId
-target = C.unpack . (getOutputName <$> inputUrl <*> ffmpegOpts <*> format)
+target =
+  OpId . C.unpack . (getOutputName <$> inputUrl <*> ffmpegOpts <*> format)
 
 inputFile :: OperationEnv -> FilePath
-inputFile env = target env <> ".input"
+inputFile env = (transcoder env & tmpDir) <> filePath (target env) <> ".input"
 
 progressUrl :: OperationEnv -> String
 progressUrl env =
-  "http://" <> progressListenerAddr (transcoder env) <> "/?id=" <> target env
+  "http://" <> progressListenerAddr (transcoder env) <> "/?id=" <>
+  filePath (target env)
 
 app :: Transcoder -> Application
 app t req respond = do
@@ -265,25 +271,30 @@ transcode env = do
       liftIO $
         runTranscode >>= \case
           ExitSuccess -> do
-            storeFile transcodeFile
-            storeFile logFilePath
+            storeFile (target env) transcodeFile
+            storeFile logFileId logFilePath
             removeFile transcodeFile
             removeFile _inputFile
             removeFile logFilePath
           ExitFailure code -> do
             warningM "transcode" $
               "process " <> show args <> " failed with exit code " <> show code
-            removeFileIfExists $ target env
+            removeFileIfExists transcodeFile
   where
-    logFilePath = transcodeFile <> ".log"
+    logFileId = OpId $ (target env & filePath) <> ".log"
+    logFilePath = (transcoder env & tmpDir) <> filePath logFileId
     _inputFile = inputFile env
-    transcodeFile = target env
+    transcodeFile = transcodeOutputPath env
     args = ffmpegArgs env
     up = updateProgress (target env) (transcoder env)
     onDownloadProgress = up . set progressDownloadProgress
-    storeFile id = do
-      debugM rootLoggerName $ "storing " <> id
-      (put . store . transcoder $ env) id $ BS.readFile id
+    storeFile :: OpId -> FilePath -> IO ()
+    storeFile id path = do
+      debugM rootLoggerName $ "storing " <> show id
+      (put . store . transcoder $ env) id $ BS.readFile path
+
+transcodeOutputPath :: OperationEnv -> FilePath
+transcodeOutputPath env = (transcoder env & tmpDir) <> (target env & filePath)
 
 allocateProgressFlag :: OperationEnv -> _ -> ResourceT IO ReleaseKey
 allocateProgressFlag env flag =
@@ -356,8 +367,8 @@ ffmpegArgs env =
   let i = inputFile env
       opts = List.map C.unpack . ffmpegOpts $ env
       outputName = target env
-  in ["nice", "ffmpeg", "-hide_banner", "-i", i] ++
-     opts ++ ["-progress", progressUrl env, "-y", outputName]
+   in ["nice", "ffmpeg", "-hide_banner", "-i", i] ++
+      opts ++ ["-progress", progressUrl env, "-y", filePath outputName]
 
 getFirstQueryValue :: ByteString -> Query -> Maybe ByteString
 getFirstQueryValue key = List.find (\(k, _) -> k == key) >>> fmap snd >>> join
@@ -396,8 +407,8 @@ hashStrings = MD5.updates MD5.init >>> MD5.finalize
 -- This is the request site for ffmpeg's progress parameter.
 progressApp :: (OpId -> Integer -> IO ()) -> Application
 progressApp f req respond = do
-  let id =
-        fmap C.unpack . getFirstQueryValue "id" $ Wai.queryString req :: Maybe OpId
+  let id :: Maybe OpId =
+        OpId . C.unpack <$> getFirstQueryValue "id" (Wai.queryString req)
   case id of
     Nothing -> respond $ responseLBS status400 [] "no id"
     Just id -> do
@@ -408,7 +419,7 @@ progressApp f req respond = do
           act ss =
             case ss of
               ("out_time_ms":s:_) -> do
-                debugM "progress" $ id <> ": " <> show ss
+                debugM "progress" $ show id <> ": " <> show ss
                 f id $ 1000 * read s
               -- Maybe return Bool for continuation based on progress field
               _ -> return ()
@@ -439,11 +450,13 @@ data Store = Store
 
 newSimpleStore =
   Store
-  { put =
-      \id bs -> do
-        createDirectoryIfMissing True $ takeDirectory $ filePath id
-        runResourceT $ BS.writeFile (filePath id) bs
-  , get = \id off -> readFileFrom off $ filePath id
-  , have = \id -> doesFileExist $ filePath id
-  }
-  where filePath = ("simple"</>)
+    { put =
+        \id bs -> do
+          createDirectoryIfMissing True $ takeDirectory $ _filePath id
+          runResourceT $ BS.writeFile (_filePath id) bs
+    , get = \id off -> readFileFrom off $ _filePath id
+    , size = getFileSize . _filePath
+    , have = doesFileExist . _filePath
+    }
+  where
+    _filePath = ("simple" </>) . filePath
