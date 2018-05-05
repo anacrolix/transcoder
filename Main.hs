@@ -257,10 +257,10 @@ transcode env = do
         withFile logFilePath WriteMode $ \logFile ->
           withCreateProcess
             (proc (List.head args) (List.tail args))
-            { std_err = UseHandle logFile
-            , std_out = UseHandle logFile
-            , std_in = UseHandle devNull
-            } $ \_ _ _ ph -> waitForProcess ph
+              { std_err = UseHandle logFile
+              , std_out = UseHandle logFile
+              , std_in = UseHandle devNull
+              } $ \_ _ _ ph -> waitForProcess ph
   withProgressFlag env converting $
     runResourceT $ do
       queued <- allocateProgressFlag env queued
@@ -386,11 +386,11 @@ claimOp :: OperationEnv -> IO ()
 claimOp env =
   let op = target env
       ops = active . transcoder $ env
-  in atomically $ do
-       opsval <- readTVar ops
-       if Map.member op opsval
-         then retry
-         else modifyTVar ops $ Map.insert op defaultProgress
+   in atomically $ do
+        opsval <- readTVar ops
+        if Map.member op opsval
+          then retry
+          else modifyTVar ops $ Map.insert op defaultProgress
 
 releaseOp :: OperationEnv -> IO ()
 releaseOp env =
