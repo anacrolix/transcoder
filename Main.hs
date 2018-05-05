@@ -398,14 +398,15 @@ download env progress = do
             Nothing    -> 0.5
         body :: BS.ByteString (ResourceT IO) () =
           hoist liftIO $ responseBody resp
-    unless complete $
+    unless complete $ do
+      createDirectoriesForFile file
       void $
-      runResourceT $
-      BS.chunkFoldM
-        (downloadProgress bytesProgress)
-        (return 0)
-        (\_ -> return ()) $
-      BS.writeFile file $ BS.copy body
+        runResourceT $
+        BS.chunkFoldM
+          (downloadProgress bytesProgress)
+          (return 0)
+          (\_ -> return ()) $
+        BS.writeFile file $ BS.copy body
 
 contentLength :: ResponseHeaders -> Maybe FileLength
 contentLength hs =
@@ -507,11 +508,14 @@ data Store = Store
   , have :: OpId -> IO Bool
   }
 
+createDirectoriesForFile :: FilePath -> IO ()
+createDirectoriesForFile = createDirectoryIfMissing True . takeDirectory
+
 newSimpleStore =
   Store
     { put =
         \id bs -> do
-          createDirectoryIfMissing True $ takeDirectory $ _filePath id
+          createDirectoriesForFile $ _filePath id
           runResourceT $ BS.writeFile (_filePath id) bs
     , get = \id off -> readFileFrom off $ _filePath id
     , size = getFileSize . _filePath
