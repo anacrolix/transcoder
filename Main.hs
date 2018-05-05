@@ -187,22 +187,28 @@ getProgress op t = do
           then set ready True defaultProgress
           else defaultProgress
 
-serveTranscode :: Transcoder -> ServerRequest -> (Wai.Response -> IO ResponseReceived) -> IO Wai.ResponseReceived
+serveTranscode ::
+     Transcoder -> ServerRequest -> Respond -> IO Wai.ResponseReceived
 serveTranscode t req respond = do
-  e <- runExceptT $ do
-    i <- queryValue "i"
-    f <- queryValue "f"
-    let env = OperationEnv i opts f t
-    pure $ case websocketsApp defaultConnectionOptions (wsApp env) req of
-      Just resp -> respond resp
-      Nothing ->
-        bracket_ (claimOp env) (releaseOp env) $ do
-          ready <- store t & have $ target env
-          unless ready $ transcode env
-          -- TODO: Take a streamingResponse from the store's get method.
-          -- Warp seems to handle the file parts for us if we pass Nothing.
-          let body :: Stream (Of ByteString) (ResourceT IO) () = BS.toChunks $ (get . store $ t) (target env) 0
-          respond $ streamingResponse (hoist runResourceT body) status200 []
+  e <-
+    runExceptT $ do
+      i <- queryValue "i"
+      f <- queryValue "f"
+      let env = OperationEnv i opts f t
+      pure $
+        case websocketsApp defaultConnectionOptions (wsApp env) req of
+          Just resp -> respond resp
+          Nothing ->
+            bracket_ (claimOp env) (releaseOp env) $ do
+              ready <- store t & have $ target env
+              unless ready $ transcode env
+              size <- (size . store $ t) (target env)
+              respondPartial
+                (requestMethod req)
+                (requestHeaderRange req >>= parseByteRanges)
+                size
+                respond
+                (store t & get $ target env)
   case e of
     Left r   -> respond r
     Right rr -> rr
@@ -212,6 +218,78 @@ serveTranscode t req respond = do
     queryValue k =
       maybe (throwE . badParam $ k) return $ getFirstQueryValue k qs
     opts = getQueryValues "opt" qs
+
+type Respond = Wai.Response -> IO ResponseReceived
+
+bodyWithMethod method body =
+  if method == methodHead
+    then mempty
+    else body
+
+respondPartial ::
+     Method
+  -> Maybe ByteRanges
+  -> FileLength
+  -> Respond
+  -> (FileLength -> BS.ByteString (ResourceT IO) ())
+  -> IO ResponseReceived
+respondPartial method Nothing size respond get =
+  respondStreamingByteString
+    respond
+    status200
+    [("Content-Length", C.pack $ show size), ("Accept-Ranges", "bytes")] $
+  bodyWithMethod method $ get 0
+respondPartial method (Just (range:_)) size respond get =
+  respondStreamingByteString
+    respond
+    status206
+    [ ( "Content-Range"
+      , C.pack $ "bytes " <> show begin <> "-" <> show last <> "/" <> show size)
+    , ("Content-Length", C.pack $ show $ last - begin + 1)
+    , ("Accept-Ranges", "bytes")
+    ] $
+  bodyWithMethod method $ get $ byteRangeBegin size range
+  where
+    begin = byteRangeBegin size range
+    last = byteRangeLast size range
+
+respondStreamingByteString ::
+     Respond
+  -> Status
+  -> ResponseHeaders
+  -> BS.ByteString (ResourceT IO) ()
+  -> IO ResponseReceived
+respondStreamingByteString respond status headers bs =
+  runResourceT $ do
+    l <- BS.toLazy_ bs
+    liftIO $
+      debugM rootLoggerName $
+      "response lazy string length: " <> (show . LBS.length) l
+    liftIO $ respond $ responseLBS status headers l
+
+byteRangeLast :: Integer -> ByteRange -> Integer
+byteRangeLast size =
+  \case
+    ByteRangeFrom _ -> size - 1
+    ByteRangeFromTo _ t -> min t size
+    ByteRangeSuffix s -> size - s
+
+byteRangeBegin :: Integer -> ByteRange -> Integer
+byteRangeBegin size =
+  \case
+    ByteRangeFrom f -> f
+    ByteRangeFromTo f _ -> f
+    ByteRangeSuffix s -> size - s
+
+bytesRange :: Wai.Request -> FileLength -> (Integer, Integer)
+bytesRange r l =
+  maybe
+    (0, l)
+    (\case
+       ByteRangeFrom f -> (f, l - f)
+       ByteRangeFromTo f t -> (f, t - f + 1)
+       ByteRangeSuffix s -> (l - s, s))
+    (requestHeaderRange r >>= parseByteRanges >>= listToMaybe)
 
 type BreakT m a = ExceptT a m a
 
@@ -443,8 +521,8 @@ getDuration env = do
 
 data Store = Store
   { put  :: OpId -> BS.ByteString (ResourceT IO) () -> IO ()
-  -- TODO: This should return a streaming thingy.
   , get  :: OpId -> FileLength -> BS.ByteString (ResourceT IO) ()
+  , size :: OpId -> IO FileLength
   , have :: OpId -> IO Bool
   }
 
