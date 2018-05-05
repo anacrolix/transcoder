@@ -90,7 +90,10 @@ newTranscoder = do
 
 newtype OpId = OpId
   { filePath :: FilePath
-  } deriving (Ord, Eq, Show)
+  } deriving (Ord, Eq)
+
+instance Show OpId where
+  show = show . filePath
 
 type ServerRequest = Wai.Request
 
