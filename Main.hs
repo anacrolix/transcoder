@@ -28,6 +28,8 @@ import qualified Data.List                       as List
 import qualified Data.Map.Strict                 as Map
 import           Data.Maybe
 import           Data.Monoid
+import qualified Data.Text                       as T
+import qualified Data.Text.IO                    as TIO
 import           Extra
 import qualified FFmpeg
 import           Network.HTTP.Types
@@ -51,7 +53,6 @@ import           System.Log.Handler.Simple
 import           System.Log.Logger
 import           System.Process
 
--- import Network.Wai.Handler.Warp.File
 progressAppPort :: Port
 progressAppPort = 3001
 
@@ -67,11 +68,14 @@ main :: IO () = do
     debugM rootLoggerName $
       "progress server starting on port " <> show progressAppPort
     Warp.runSettings
-      (setTimeout 10000 . setPort progressAppPort $ defaultSettings) $
+      (setPort progressAppPort $ setOnException onException defaultSettings) $
       progressApp $ \id pos -> updateProgress id t $ set convertPos pos
   infoM rootLoggerName $ "starting main http server on port " <> show mainPort
-  Warp.run mainPort $ app t
+  Warp.runSettings
+    (setPort mainPort $ setOnException onException defaultSettings) $
+    app t
   where
+    onException _ e = TIO.hPutStrLn stderr $ T.pack $ show e
     mainPort = 3000
 
 newTranscoder :: IO Transcoder

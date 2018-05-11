@@ -36,4 +36,5 @@ executable transcoder
     resourcet,
     filepath,
     concurrent-extra,
-    streaming-utils
+    streaming-utils,
+    text
