@@ -84,14 +84,17 @@ newTranscoder = do
   a <- newTVarIO Map.empty
   es <- newTVarIO Map.empty
   transcodeLock <- new
-  return $
+  hcm <- newManager defaultManagerSettings
+  return
     Transcoder
-      a
-      es
-      ("localhost:" <> show progressAppPort)
-      newSimpleStore
-      transcodeLock
-      "tmp"
+      { active = a
+      , events = es
+      , progressListenerAddr = "localhost:" <> show progressAppPort
+      , store = newSimpleStore
+      , transcodeLock = transcodeLock
+      , tmpDir = "tmp"
+      , httpClientManager = hcm
+      }
 
 newtype OpId = OpId
   { filePath :: FilePath
@@ -113,6 +116,7 @@ data Transcoder = Transcoder
   , store                :: Store
   , transcodeLock        :: Lock
   , tmpDir               :: FilePath
+  , httpClientManager    :: Manager
   }
 
 data OperationEnv = OperationEnv
@@ -372,19 +376,14 @@ allocate_ a f = allocate a (const f)
 removeFileIfExists :: FilePath -> IO ()
 removeFileIfExists file = doesFileExist file >>= flip when (removeFile file)
 
--- TODO: create this once
-newHttpClientManager :: IO Manager
-newHttpClientManager = newManager defaultManagerSettings
-
 type FileLength = Integer
 
 download :: OperationEnv -> (Float -> IO ()) -> IO ()
 download env progress = do
   let file = inputFile env
   req <- parseRequest . C.unpack $ inputUrl env
-  m <- newHttpClientManager
   infoM rootLoggerName $ "downloading " <> file
-  withHTTP req m $ \resp
+  withHTTP req (env & transcoder & httpClientManager) $ \resp
     -- TODO: Resume from where we're upto instead.
    -> do
     when (Http.Client.responseStatus resp /= status200) $
