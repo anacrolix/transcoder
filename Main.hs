@@ -57,6 +57,7 @@ progressAppPort :: Port
 progressAppPort = 3001
 
 main :: IO () = do
+  hSetBuffering stderr LineBuffering
   h <-
     streamHandler stderr DEBUG >>= \h ->
       return $
