@@ -1,13 +1,8 @@
 flags: {}
 extra-deps:
+  # These aren't in the LTS
   - streaming-wai-0.1.1
-  - aeson-1.1.2.0
-  - attoparsec-0.13.1.0
-  - streaming-0.1.4.5
-  - streaming-bytestring-0.1.4.6
-  - streaming-commons-0.1.17
-  - mmorph-1.0.9
   - streaming-utils-0.1.4.7
-  - json-stream-0.4.1.5
-  - resourcet-1.1.11
+  # - ../wai/warp
 resolver: lts-11.7
+allow-newer: true
