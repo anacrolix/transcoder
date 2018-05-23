@@ -417,7 +417,8 @@ handleDownloadResponse filePath partialOffset progress response =
   where
     status = Http.Client.responseStatus response
     writeFrom offset =
-      writeFileAt filePath offset (responseBody response) bytesProgress
+      writeFileAt filePath offset $
+      void $ streamProgress bytesProgress $ responseBody response
     cl :: Maybe FileLength =
       contentLength (Http.Client.responseHeaders response)
     bytesProgress fl =
@@ -426,31 +427,25 @@ handleDownloadResponse filePath partialOffset progress response =
         Just total -> fromIntegral fl / fromIntegral total
         Nothing    -> 0.5
 
+streamProgress ::
+     (Integer -> IO ()) -> BS.ByteString IO r -> BS.ByteString IO (Of Integer r)
 streamProgress callback stream =
-  BS.chunkFoldM (downloadProgress callback) (return 0) (\_ -> return ()) $
-  BS.copy stream
+  BS.chunkFoldM step (return 0) return $ BS.copy stream
+  where
+    step prev chunk = do
+      let next = prev + fromIntegral (B.length chunk)
+      liftIO $ callback next
+      return next
 
-writeFileAt ::
-     FilePath -> Integer -> BS.ByteString IO () -> (Integer -> IO ()) -> IO ()
-writeFileAt path offset bytes progress =
+writeFileAt :: FilePath -> Integer -> BS.ByteString IO () -> IO ()
+writeFileAt path offset bytes =
   withBinaryFile path WriteMode $ \handle -> do
     hSeek handle AbsoluteSeek offset
-    void $ BS.hPut handle $ streamProgress progress bytes
+    BS.hPut handle bytes
 
 contentLength :: ResponseHeaders -> Maybe FileLength
 contentLength hs =
   (read . C.unpack . snd) <$> List.find (\(n, _) -> n == hContentLength) hs
-
-downloadProgress ::
-     MonadIO m
-  => (FileLength -> IO ())
-  -> FileLength
-  -> ByteString
-  -> m FileLength
-downloadProgress update lastPos bs = do
-  let newPos = lastPos + fromIntegral (B.length bs)
-  liftIO $ update newPos
-  return newPos
 
 ffmpegArgs :: OperationEnv -> [String]
 ffmpegArgs env =
