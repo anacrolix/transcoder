@@ -477,8 +477,9 @@ claimOp env =
           else modifyTVar ops $ Map.insert op defaultProgress
 
 releaseOp :: OperationEnv -> IO ()
-releaseOp env =
+releaseOp env = do
   atomically $ modifyTVar (active $ transcoder env) $ Map.delete (target env)
+  onProgressEvent (target env) (transcoder env)
 
 getOutputName :: ByteString -> [ByteString] -> ByteString -> ByteString
 getOutputName i opts f =
