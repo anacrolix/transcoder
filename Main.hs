@@ -316,7 +316,7 @@ devNull :: Handle
 devNull =
   unsafePerformIO $ do
     warningM rootLoggerName "opening /dev/null"
-    openFile "/dev/null" ReadWriteMode
+    openBinaryFile "/dev/null" ReadWriteMode
 
 withProgressFlag env f = bracket_ (up $ set f True) (up $ set f False)
   where
@@ -329,7 +329,7 @@ transcode env = do
   withProgressFlag env downloading $ download env onDownloadProgress
   forkIO $ getDuration env
   let runTranscode =
-        withFile logFilePath WriteMode $ \logFile ->
+        withBinaryFile logFilePath WriteMode $ \logFile ->
           withCreateProcess
             (proc (List.head args) (List.tail args))
               { std_err = UseHandle logFile
