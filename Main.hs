@@ -338,7 +338,7 @@ transcode env = do
               } $ \_ _ _ ph -> waitForProcess ph
   withProgressFlag env converting $
     runResourceT $ do
-      queued <- allocateProgressFlag env queued
+      queued <- allocateProgressFlag env $ set queued
       allocate_
         (acquire $ transcodeLock . transcoder $ env)
         (Lock.release $ transcodeLock . transcoder $ env)
@@ -371,12 +371,13 @@ transcode env = do
 transcodeOutputPath :: OperationEnv -> FilePath
 transcodeOutputPath env = (transcoder env & tmpDir) </> (target env & filePath)
 
-allocateProgressFlag :: OperationEnv -> _ -> ResourceT IO ReleaseKey
-allocateProgressFlag env flag =
+allocateProgressFlag ::
+     OperationEnv -> (Bool -> Progress -> Progress) -> ResourceT IO ReleaseKey
+allocateProgressFlag env set =
   fst <$>
   allocate_
-    (updateProgressEnv env (set flag True))
-    (updateProgressEnv env (set flag False))
+    (updateProgressEnv env (set True))
+    (updateProgressEnv env (set False))
 
 allocate_ a f = allocate a (const f)
 
