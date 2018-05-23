@@ -357,7 +357,7 @@ transcode env = do
             removeFileIfExists transcodeFile
   where
     logFileId = OpId $ (target env & filePath) <> ".log"
-    logFilePath = (transcoder env & tmpDir) </> filePath logFileId
+    logFilePath = (env & transcoder & tmpDir) </> filePath logFileId
     _inputFile = inputFile env
     transcodeFile = transcodeOutputPath env
     args = ffmpegArgs env
@@ -388,36 +388,54 @@ type FileLength = Integer
 
 download :: OperationEnv -> (Float -> IO ()) -> IO ()
 download env progress = do
-  let file = inputFile env
-  req <- parseRequest . C.unpack $ inputUrl env
+  initReq <- parseRequest . C.unpack $ inputUrl env
   infoM rootLoggerName $ "downloading " <> file
-  withHTTP req (env & transcoder & httpClientManager) $ \resp
-    -- TODO: Resume from where we're upto instead.
-   -> do
-    when (Http.Client.responseStatus resp /= status200) $
-      error $ show $ Http.Client.responseStatus resp
-    let cl :: Maybe FileLength =
-          contentLength (Http.Client.responseHeaders resp)
-    existingSize <-
-      (Just <$> getFileSize file) `catch`
-      (\(_ :: IOException) -> return Nothing)
-    let complete = fromMaybe False $ (==) <$> cl <*> existingSize
-        bytesProgress fl =
-          progress $
-          case cl of
-            Just total -> fromIntegral fl / fromIntegral total
-            Nothing    -> 0.5
-        body :: BS.ByteString (ResourceT IO) () =
-          hoist liftIO $ responseBody resp
-    unless complete $ do
-      createDirectoriesForFile file
-      void $
-        runResourceT $
-        BS.chunkFoldM
-          (downloadProgress bytesProgress)
-          (return 0)
-          (\_ -> return ()) $
-        BS.writeFile file $ BS.copy body
+  existingSize <- getFileSize file `catch` \(_ :: IOError) -> return 0
+  createDirectoriesForFile file
+  let req =
+        initReq
+          { Http.Client.requestHeaders =
+              [(hRange, "bytes=" <> C.pack (show existingSize) <> "-")]
+          }
+  withHTTP req (env & transcoder & httpClientManager) $
+    handleDownloadResponse file existingSize progress
+  where
+    file = inputFile env
+
+handleDownloadResponse ::
+     FilePath
+  -> Integer
+  -> (Float -> IO ())
+  -> Http.Client.Response (BSC.ByteString IO ())
+  -> IO ()
+handleDownloadResponse filePath partialOffset progress response =
+  case statusCode status of
+    200 -> writeFrom 0
+    206 -> writeFrom partialOffset
+    416 -> return ()
+    _   -> error $ show status
+  where
+    status = Http.Client.responseStatus response
+    writeFrom offset =
+      writeFileAt filePath offset (responseBody response) bytesProgress
+    cl :: Maybe FileLength =
+      contentLength (Http.Client.responseHeaders response)
+    bytesProgress fl =
+      progress $
+      case cl of
+        Just total -> fromIntegral fl / fromIntegral total
+        Nothing    -> 0.5
+
+streamProgress callback stream =
+  BS.chunkFoldM (downloadProgress callback) (return 0) (\_ -> return ()) $
+  BS.copy stream
+
+writeFileAt ::
+     FilePath -> Integer -> BS.ByteString IO () -> (Integer -> IO ()) -> IO ()
+writeFileAt path offset bytes progress =
+  withBinaryFile path WriteMode $ \handle -> do
+    hSeek handle AbsoluteSeek offset
+    void $ BS.hPut handle $ streamProgress progress bytes
 
 contentLength :: ResponseHeaders -> Maybe FileLength
 contentLength hs =
