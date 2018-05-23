@@ -244,25 +244,32 @@ respondPartial ::
   -> Respond
   -> (FileLength -> BS.ByteString (ResourceT IO) ())
   -> IO ResponseReceived
-respondPartial method Nothing size respond get =
-  respondStreamingByteString
-    respond
-    status200
-    [("Content-Length", C.pack $ show size), ("Accept-Ranges", "bytes")] $
-  bodyWithMethod method $ get 0
-respondPartial method (Just (range:_)) size respond get =
-  respondStreamingByteString
-    respond
-    status206
-    [ ( "Content-Range"
-      , C.pack $ "bytes " <> show begin <> "-" <> show last <> "/" <> show size)
-    , ("Content-Length", C.pack $ show $ last - begin + 1)
-    , ("Accept-Ranges", "bytes")
-    ] $
-  bodyWithMethod method $ get $ byteRangeBegin size range
+respondPartial method ranges size respond get =
+  respondStreamingByteString respond status headers $
+  bodyWithMethod method $ get offset
   where
-    begin = byteRangeBegin size range
-    last = byteRangeLast size range
+    (status, headers, offset) =
+      case Main.first ranges of
+        Nothing ->
+          ( status200
+          , [("Content-Length", C.pack $ show size), ("Accept-Ranges", "bytes")]
+          , 0)
+        Just range ->
+          ( status206
+          , [ ( "Content-Range"
+              , C.pack $
+                "bytes " <> show begin <> "-" <> show last <> "/" <> show size)
+            , ("Content-Length", C.pack $ show $ last - begin + 1)
+            , ("Accept-Ranges", "bytes")
+            ]
+          , byteRangeBegin size range)
+          where last = byteRangeLast size range
+                begin = byteRangeBegin size range
+
+first :: Maybe [a] -> Maybe a
+first Nothing      = Nothing
+first (Just [])    = Nothing
+first (Just (x:_)) = Just x
 
 respondStreamingByteString ::
      Respond
