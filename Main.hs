@@ -476,10 +476,9 @@ progressApp f req respond = do
     Nothing -> respond $ responseLBS status400 [] "no id"
     Just id -> do
       resp <- respond $ responseLBS status200 [] ""
-      -- TODO: This doesn't seem to work?
-      pauseTimeout req
       let act :: [String] -> IO ()
-          act ss =
+          act ss = do
+            pauseTimeout req
             case ss of
               ("out_time_ms":s:_) -> do
                 debugM "progress" $ show id <> ": " <> show ss
