@@ -23,6 +23,7 @@ import qualified Data.ByteString.Streaming       as BS
 import qualified Data.ByteString.Streaming.Char8 as BSC
 import           Data.ByteString.Streaming.HTTP  as Http.Client
 import           Data.Char
+import           Data.Default.Class
 import           Data.Hex
 import qualified Data.List                       as List
 import qualified Data.Map.Strict                 as Map
@@ -30,11 +31,15 @@ import           Data.Maybe
 import           Data.Monoid
 import qualified Data.Text                       as T
 import qualified Data.Text.IO                    as TIO
+import           Data.X509.CertificateStore
+import           Data.X509.Validation
 import           Extra
 import qualified FFmpeg
 import           Network.HTTP.Types
+import           Network.TLS
 import           Network.Wai                     as Wai
 import           Network.Wai.Handler.Warp        as Warp
+import           Network.Wai.Handler.WarpTLS
 import           Network.Wai.Handler.WebSockets
 import           Network.Wai.Streaming
 import           Network.WebSockets.Connection
@@ -64,6 +69,7 @@ main :: IO () = do
       setFormatter h $ simpleLogFormatter "[$time $loggername/$prio] $msg"
   updateGlobalLogger rootLoggerName $ clearLevel . setHandlers [h]
   debugM rootLoggerName "started main"
+  certStore <- fromJust <$> readCertificateStore "certificate.pem"
   t <- newTranscoder
   forkIO $ do
     debugM rootLoggerName $
@@ -73,9 +79,28 @@ main :: IO () = do
        setPort progressAppPort $ setOnException onException defaultSettings) $
       progressApp $ \id pos -> updateProgress id t $ set convertPos pos
   infoM rootLoggerName $ "starting main http server on port " <> show mainPort
-  Warp.runSettings
-    (setHost "localhost" $
-     setPort mainPort $ setOnException onException defaultSettings) $
+  runTLS
+    defaultTlsSettings
+      { tlsWantClientCert = True
+      , tlsServerHooks =
+          def
+            { onClientCertificate =
+                \chain -> do
+                  reasons <-
+                    validateDefault
+                      certStore
+                      def
+                      ("localhost", C.pack $ ":" <> show mainPort)
+                      chain
+                  return $
+                    case reasons of
+                      [] -> CertificateUsageAccept
+                      firstReason:_ ->
+                        CertificateUsageReject $
+                        CertificateRejectOther $ show firstReason
+            }
+      }
+    (setHost "*" $ setPort mainPort $ setOnException onException defaultSettings) $
     app t
   where
     onException _ e = TIO.hPutStrLn stderr $ T.pack $ show e
