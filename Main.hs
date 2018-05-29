@@ -69,11 +69,13 @@ main :: IO () = do
     debugM rootLoggerName $
       "progress server starting on port " <> show progressAppPort
     Warp.runSettings
-      (setPort progressAppPort $ setOnException onException defaultSettings) $
+      (setHost "localhost" $
+       setPort progressAppPort $ setOnException onException defaultSettings) $
       progressApp $ \id pos -> updateProgress id t $ set convertPos pos
   infoM rootLoggerName $ "starting main http server on port " <> show mainPort
   Warp.runSettings
-    (setPort mainPort $ setOnException onException defaultSettings) $
+    (setHost "localhost" $
+     setPort mainPort $ setOnException onException defaultSettings) $
     app t
   where
     onException _ e = TIO.hPutStrLn stderr $ T.pack $ show e
