@@ -172,14 +172,15 @@ app t req respond = do
     C.unpack (rawPathInfo req <> rawQueryString req)
   serveTranscode t req respond
 
-wsApp :: OperationEnv -> PendingConnection -> IO ()
-wsApp env pending_conn = do
+wsApp :: OperationEnv -> Wai.Request -> PendingConnection -> IO ()
+wsApp env req pending_conn = do
   conn <- acceptRequest pending_conn
   let relayProgress es = go Nothing
         where
           go last = do
             p <- getProgress oi t
             when (last /= Just p) $ sendTextData conn $ encode p
+            pauseTimeout req
             getSkipChan es
             go $ Just p
   bracket (dupEvents t oi) (const $ decEvents t oi) relayProgress
@@ -234,7 +235,7 @@ serveTranscode t req respond = do
       f <- queryValue "f"
       let env = OperationEnv i opts f t
       pure $
-        case websocketsApp defaultConnectionOptions (wsApp env) req of
+        case websocketsApp defaultConnectionOptions (wsApp env req) req of
           Just resp -> respond resp
           Nothing ->
             bracket_ (claimOp env) (releaseOp env) $ do
