@@ -362,6 +362,9 @@ transcode env = do
               { std_err = UseHandle logFile
               , std_out = UseHandle logFile
               , std_in = UseHandle devNull
+              , detach_console = True
+              , new_session = True
+              , close_fds = True
               } $ \_ _ _ ph -> waitForProcess ph
   withProgressFlag env converting $
     runResourceT $ do
