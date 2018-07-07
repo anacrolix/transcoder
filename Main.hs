@@ -367,25 +367,27 @@ transcode env = do
               -- , new_session = True
               , close_fds = True
               } $ \_ _ _ ph -> waitForProcess ph
-  withProgressFlag env converting $
-    runResourceT $ do
-      queued <- allocateProgressFlag env $ set queued
-      allocate_
-        (acquire $ transcodeLock . transcoder $ env)
-        (Lock.release $ transcodeLock . transcoder $ env)
-      Resource.release queued
-      liftIO $
-        runTranscode >>= \case
-          ExitSuccess -> do
+  -- withProgressFlag env converting $
+  runResourceT $ do
+    allocateProgressFlag env $ set converting
+    queued <- allocateProgressFlag env $ set queued
+    allocate_
+      (acquire $ transcodeLock . transcoder $ env)
+      (Lock.release $ transcodeLock . transcoder $ env)
+    Resource.release queued
+    liftIO $
+      runTranscode >>= \case
+        ExitSuccess ->
+          withProgressFlag env Progress.storing $ do
             storeFile (target env) transcodeFile
             storeFile logFileId logFilePath
             removeFile transcodeFile
             removeFile _inputFile
             removeFile logFilePath
-          ExitFailure code -> do
-            warningM "transcode" $
-              "process " <> show args <> " failed with exit code " <> show code
-            removeFileIfExists transcodeFile
+        ExitFailure code -> do
+          warningM "transcode" $
+            "process " <> show args <> " failed with exit code " <> show code
+          removeFileIfExists transcodeFile
   where
     logFileId = OpId $ (target env & filePath) <> ".log"
     logFilePath = (env & transcoder & tmpDir) </> filePath logFileId
