@@ -363,8 +363,8 @@ transcode env = do
               { std_err = UseHandle logFile
               , std_out = UseHandle logFile
               , std_in = UseHandle devNull
-              , detach_console = True
-              , new_session = True
+              -- , detach_console = True
+              -- , new_session = True
               , close_fds = True
               } $ \_ _ _ ph -> waitForProcess ph
   withProgressFlag env converting $
@@ -482,7 +482,7 @@ ffmpegArgs :: OperationEnv -> [String]
 ffmpegArgs env =
   let i = inputFile env
       opts = List.map C.unpack . ffmpegOpts $ env
-   in ["nice", "ffmpeg", "-hide_banner", "-i", i] ++
+   in ["nice", "ffmpeg", "-nostdin", "-hide_banner", "-i", i] ++
       opts ++ ["-progress", progressUrl env, "-y", transcodeOutputPath env]
 
 getFirstQueryValue :: ByteString -> Query -> Maybe ByteString
