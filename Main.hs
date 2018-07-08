@@ -2,18 +2,17 @@
 {-# LANGUAGE LambdaCase               #-}
 {-# LANGUAGE OverloadedStrings        #-}
 {-# LANGUAGE PartialTypeSignatures    #-}
+{-# LANGUAGE RankNTypes               #-}
 {-# LANGUAGE ScopedTypeVariables      #-}
 
 import           Control.Arrow                   ((>>>))
 import           Control.Concurrent
 import           Control.Concurrent.Lock         as Lock
 import           Control.Concurrent.STM
-import           Control.Exception
 import           Control.Lens
 import           Control.Monad
-import           Control.Monad.Reader
+import           Control.Monad.IO.Unlift
 import           Control.Monad.Trans.Except
-import           Control.Monad.Trans.Resource    as Resource
 import qualified Crypto.Hash.MD5                 as MD5
 import           Data.Aeson
 import           Data.ByteString                 as B
@@ -21,7 +20,8 @@ import qualified Data.ByteString.Char8           as C
 import qualified Data.ByteString.Lazy            as LBS
 import qualified Data.ByteString.Streaming       as BS
 import qualified Data.ByteString.Streaming.Char8 as BSC
-import           Data.ByteString.Streaming.HTTP  as Http.Client
+import           Data.ByteString.Streaming.HTTP  as Http.Client hiding
+                                                                 (runResourceT)
 import           Data.Char
 import           Data.Default.Class
 import           Data.Hex
@@ -48,6 +48,7 @@ import           SkipChan
 import           Streaming                       as S
 import qualified Streaming.Prelude               as S
 import           System.Directory
+import           System.DiskSpace
 import           System.Exit                     (ExitCode (..))
 import           System.FilePath
 import           System.IO
@@ -57,6 +58,8 @@ import           System.Log.Handler
 import           System.Log.Handler.Simple
 import           System.Log.Logger
 import           System.Process
+import           UnliftIO.Exception
+import           UnliftIO.Resource               as Resource
 
 progressAppPort :: Port
 progressAppPort = 3001
@@ -112,6 +115,7 @@ newTranscoder = do
   es <- newTVarIO Map.empty
   transcodeLock <- new
   hcm <- newManager defaultManagerSettings
+  downloadLock <- new
   return
     Transcoder
       { active = a
@@ -121,6 +125,7 @@ newTranscoder = do
       , transcodeLock = transcodeLock
       , tmpDir = "tmp"
       , httpClientManager = hcm
+      , downloadLock = downloadLock
       }
 
 newtype OpId = OpId
@@ -144,6 +149,7 @@ data Transcoder = Transcoder
   , transcodeLock        :: Lock
   , tmpDir               :: FilePath
   , httpClientManager    :: Manager
+  , downloadLock         :: Lock
   }
 
 data OperationEnv = OperationEnv
@@ -327,10 +333,11 @@ byteRangeBegin size =
     ByteRangeFromTo f _ -> f
     ByteRangeSuffix s -> size - s
 
-updateProgress :: OpId -> Transcoder -> (Progress -> Progress) -> IO ()
-updateProgress k t f = do
-  atomically $ modifyTVar' (active t) $ Map.update (Just . f) k
-  onProgressEvent k t
+-- updateProgress :: OpId -> Transcoder -> (Progress -> Progress) -> IO ()
+updateProgress k t f =
+  liftIO $ do
+    atomically $ modifyTVar' (active t) $ Map.update (Just . f) k
+    onProgressEvent k t
 
 onProgressEvent :: OpId -> Transcoder -> IO ()
 onProgressEvent oi t = do
@@ -346,39 +353,31 @@ devNull =
     warningM rootLoggerName "opening /dev/null"
     openBinaryFile "/dev/null" ReadWriteMode
 
+type FlagSetter = Setter' Progress Bool
+
+withProgressFlag :: MonadUnliftIO m => OperationEnv -> FlagSetter -> m a -> m a
 withProgressFlag env f = bracket_ (up $ set f True) (up $ set f False)
   where
     up = updateProgressEnv env
 
 updateProgressEnv env = updateProgress (target env) (transcoder env)
 
+allocateAcquire :: MonadResource m => Lock -> m ReleaseKey
+allocateAcquire lock = fst <$> allocate_ (acquire lock) (Lock.release lock)
+
 transcode :: OperationEnv -> IO ()
-transcode env = do
-  withProgressFlag env downloading $ download env onDownloadProgress
-  forkIO $ getDuration env
-  let runTranscode =
-        withBinaryFile logFilePath WriteMode $ \logFile ->
-          withCreateProcess
-            (proc (List.head args) (List.tail args))
-              { std_err = UseHandle logFile
-              , std_out = UseHandle logFile
-              , std_in = UseHandle devNull
-              -- , detach_console = True
-              -- , new_session = True
-              , close_fds = True
-              } $ \_ _ _ ph -> waitForProcess ph
-  -- withProgressFlag env converting $
+transcode env =
   runResourceT $ do
+    downloadLockReleaseKey <- queueForLock _downloadLock
+    withFlag downloading $ liftIO $ download env onDownloadProgress
+    liftIO $ forkIO $ getDuration env
     allocateProgressFlag env $ set converting
-    queued <- allocateProgressFlag env $ set queued
-    allocate_
-      (acquire $ transcodeLock . transcoder $ env)
-      (Lock.release $ transcodeLock . transcoder $ env)
-    Resource.release queued
+    queueForLock _transcodeLock
+    Resource.release downloadLockReleaseKey
     liftIO $
       runTranscode >>= \case
         ExitSuccess ->
-          withProgressFlag env Progress.storing $ do
+          withFlag Progress.storing $ do
             storeFile (target env) transcodeFile
             storeFile logFileId logFilePath
             removeFile transcodeFile
@@ -389,6 +388,11 @@ transcode env = do
             "process " <> show args <> " failed with exit code " <> show code
           removeFileIfExists transcodeFile
   where
+    queueForLock lock = withFlag queued $ allocateAcquire lock
+    _transcodeLock = transcodeLock . transcoder $ env
+    _downloadLock = downloadLock . transcoder $ env
+    withFlag :: MonadUnliftIO m => FlagSetter -> m a -> m a
+    withFlag = withProgressFlag env
     logFileId = OpId $ (target env & filePath) <> ".log"
     logFilePath = (env & transcoder & tmpDir) </> filePath logFileId
     _inputFile = inputFile env
@@ -400,6 +404,15 @@ transcode env = do
     storeFile id path = do
       debugM rootLoggerName $ "storing " <> show id
       (put . store . transcoder $ env) id $ BS.readFile path
+    runTranscode =
+      withBinaryFile logFilePath WriteMode $ \logFile ->
+        withCreateProcess
+          (proc (List.head args) (List.tail args))
+            { std_err = UseHandle logFile
+            , std_out = UseHandle logFile
+            , std_in = UseHandle devNull
+            , close_fds = True
+            } $ \_ _ _ ph -> waitForProcess ph
 
 transcodeOutputPath :: OperationEnv -> FilePath
 transcodeOutputPath env = (transcoder env & tmpDir) </> (target env & filePath)
@@ -449,9 +462,13 @@ handleDownloadResponse filePath partialOffset progress response =
     _   -> error $ show status
   where
     status = Http.Client.responseStatus response
-    writeFrom offset =
+    writeFrom offset = do
+      avail <- getAvailSpace $ takeDirectory filePath
+      when (3 * offset + fromJust cl > avail) $ do
+        removeFileIfExists filePath
+        error "insufficient disk space"
       writeFileAt filePath offset $
-      void $ streamProgress bytesProgress $ responseBody response
+        void $ streamProgress bytesProgress $ responseBody response
     cl :: Maybe FileLength =
       contentLength (Http.Client.responseHeaders response)
     bytesProgress fl =

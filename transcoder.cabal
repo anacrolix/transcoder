@@ -42,4 +42,7 @@ executable transcoder
     tls,
     data-default-class,
     x509-validation,
-    x509-store
+    x509-store,
+    disk-free-space,
+    unliftio,
+    unliftio-core
