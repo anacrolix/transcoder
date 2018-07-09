@@ -464,7 +464,7 @@ handleDownloadResponse filePath partialOffset progress response =
     status = Http.Client.responseStatus response
     writeFrom offset = do
       avail <- getAvailSpace $ takeDirectory filePath
-      when (3 * offset + fromJust cl > avail) $ do
+      when (3 * (offset + fromJust cl) > avail) $ do
         removeFileIfExists filePath
         error "insufficient disk space"
       writeFileAt filePath offset $
