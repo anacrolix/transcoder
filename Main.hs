@@ -489,7 +489,7 @@ streamProgress callback stream =
 
 writeFileAt :: FilePath -> Integer -> BS.ByteString IO () -> IO ()
 writeFileAt path offset bytes =
-  withBinaryFile path WriteMode $ \handle -> do
+  withBinaryFile path ReadWriteMode $ \handle -> do
     hSeek handle AbsoluteSeek offset
     BS.hPut handle bytes
 
