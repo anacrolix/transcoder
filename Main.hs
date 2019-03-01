@@ -98,9 +98,9 @@ main :: IO () = do
                   return $
                     case reasons of
                       [] -> CertificateUsageAccept
-                      firstReason:_ ->
+                      reasons ->
                         CertificateUsageReject $
-                        CertificateRejectOther $ show firstReason
+                        CertificateRejectOther $ show reasons
             }
       }
     (setHost "localhost" $ setPort mainPort $ setOnException onException defaultSettings) $
