@@ -103,7 +103,7 @@ main :: IO () = do
                         CertificateRejectOther $ show firstReason
             }
       }
-    (setHost "*" $ setPort mainPort $ setOnException onException defaultSettings) $
+    (setHost "localhost" $ setPort mainPort $ setOnException onException defaultSettings) $
     app t
   where
     onException _ e = TIO.hPutStrLn stderr $ T.pack $ show e
