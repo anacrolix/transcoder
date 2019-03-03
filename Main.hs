@@ -28,7 +28,7 @@ import           Data.Hex
 import qualified Data.List                       as List
 import qualified Data.Map.Strict                 as Map
 import           Data.Maybe
-import           Data.Monoid
+import           Data.Monoid ()
 import qualified Data.Text                       as T
 import qualified Data.Text.IO                    as TIO
 import           Data.X509.CertificateStore
