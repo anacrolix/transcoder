@@ -11,6 +11,7 @@ executable transcoder
   other-modules: SkipChan, FFmpeg, Progress, Extra
   ghc-options: -Wall -Wno-missing-signatures -Wno-name-shadowing -Wno-unused-do-bind -threaded
   build-depends:
+    async,
     lens,
     base,
     wai,

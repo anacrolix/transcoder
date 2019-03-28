@@ -7,6 +7,7 @@
 
 import           Control.Arrow                   ((>>>))
 import           Control.Concurrent
+import           Control.Concurrent.Async        (race_)
 import           Control.Concurrent.Lock         as Lock
 import           Control.Concurrent.STM
 import           Control.Lens
@@ -189,7 +190,9 @@ wsApp env req pending_conn = do
             pauseTimeout req
             getSkipChan es
             go $ Just p
-  bracket (dupEvents t oi) (const $ decEvents t oi) relayProgress
+  race_
+    (bracket (dupEvents t oi) (const $ decEvents t oi) relayProgress)
+    (receiveDataMessage conn)
   where
     t = transcoder env
     oi = target env
