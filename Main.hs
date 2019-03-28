@@ -52,7 +52,7 @@ import           System.DiskSpace
 import           System.Exit                     (ExitCode (..))
 import           System.FilePath
 import           System.IO
-import           System.IO.Unsafe
+-- import           System.IO.Unsafe
 import           System.Log.Formatter
 import           System.Log.Handler
 import           System.Log.Handler.Simple
@@ -346,13 +346,6 @@ onProgressEvent oi t = do
     Nothing      -> return ()
     Just (_, ec) -> putSkipChan ec ()
 
-{-# NOINLINE devNull #-}
-devNull :: Handle
-devNull =
-  unsafePerformIO $ do
-    warningM rootLoggerName "opening /dev/null"
-    openBinaryFile "/dev/null" ReadWriteMode
-
 type FlagSetter = Setter' Progress Bool
 
 withProgressFlag :: MonadUnliftIO m => OperationEnv -> FlagSetter -> m a -> m a
@@ -405,7 +398,9 @@ transcode env =
       debugM rootLoggerName $ "storing " <> show id
       (put . store . transcoder $ env) id $ BS.readFile path
     runTranscode =
-      withBinaryFile logFilePath WriteMode $ \logFile ->
+      withBinaryFile logFilePath WriteMode $
+      \logFile -> withBinaryFile "/dev/null" WriteMode $
+      \devNull ->
         withCreateProcess
           (proc (List.head args) (List.tail args))
             { std_err = UseHandle logFile
