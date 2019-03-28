@@ -5,7 +5,7 @@ module Progress where
 
 import           Control.Lens
 import           Data.Aeson
-import           Data.Aeson.Types
+import           Data.Aeson.Types ()
 import           Data.Char
 import           Data.List
 import           Data.Maybe
