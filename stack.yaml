@@ -3,5 +3,5 @@ extra-deps:
   # These aren't in the LTS
   - streaming-utils-0.2.0.0
   - json-stream-0.4.2.4@sha256:8b7f17d54a6e1e6311756270f8bcf51e91bab4300945400de66118470dcf51b9
-resolver: lts-13.9
+resolver: lts-13.25
 allow-newer: true
