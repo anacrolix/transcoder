@@ -17,6 +17,7 @@ import           Control.Monad.Trans.Except
 import qualified Crypto.Hash.MD5                 as MD5
 import           Data.Aeson
 import           Data.ByteString                 as B
+import           Data.ByteString.Builder         (byteString)
 import qualified Data.ByteString.Char8           as C
 import qualified Data.ByteString.Lazy            as LBS
 import qualified Data.ByteString.Streaming       as BS
@@ -53,7 +54,6 @@ import           System.DiskSpace
 import           System.Exit                     (ExitCode (..))
 import           System.FilePath
 import           System.IO
--- import           System.IO.Unsafe
 import           System.Log.Formatter
 import           System.Log.Handler
 import           System.Log.Handler.Simple
@@ -315,12 +315,16 @@ respondStreamingByteString ::
   -> BS.ByteString (ResourceT IO) ()
   -> IO ResponseReceived
 respondStreamingByteString respond status headers bs =
-  runResourceT $ do
-    l <- BS.toLazy_ bs
-    liftIO $
-      debugM rootLoggerName $
-      "response lazy string length: " <> (show . LBS.length) l
-    liftIO $ respond $ responseLBS status headers l
+  respond $ responseStream status headers streamingBody
+  where
+    streamingBody write flush =
+      let
+        writer a = liftIO $ do
+          debugM rootLoggerName $ "streaming write " <> (show . B.length $ a) <> " bytes"
+          write $ byteString a
+          flush
+      in
+        runResourceT $ void $ S.effects $ S.for (BS.toChunks bs)   writer
 
 byteRangeLast :: Integer -> ByteRange -> Integer
 byteRangeLast size =
