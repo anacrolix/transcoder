@@ -157,12 +157,14 @@ data Transcoder = Transcoder
   , downloadLock         :: Lock
   }
 
-data OperationEnv = OperationEnv
-  { inputUrl   :: ByteString
-  , ffmpegOpts :: [ByteString]
-  , format     :: ByteString
-  , transcoder :: Transcoder
-  }
+data OperationEnv =
+  OperationEnv
+    { inputUrl    :: ByteString
+    , ffmpegOpts  :: [ByteString]
+    , format      :: ByteString
+    , transcoder  :: Transcoder
+    , streamInput :: Bool
+    }
 
 target :: OperationEnv -> OpId
 target =
@@ -170,6 +172,10 @@ target =
 
 inputFile :: OperationEnv -> FilePath
 inputFile env = (transcoder env & tmpDir) </> filePath (target env) <> ".input"
+
+inputArg :: OperationEnv -> String
+inputArg env@OperationEnv {streamInput = True}  = C.unpack $ inputUrl env
+inputArg env@OperationEnv {streamInput = False} = inputFile env
 
 progressUrl :: OperationEnv -> String
 progressUrl env =
@@ -246,7 +252,8 @@ serveTranscode t req respond = do
     runExceptT $ do
       i <- queryValue "i"
       f <- queryValue "f"
-      let env = OperationEnv i opts f t
+      streamInput <- pure $ "streamInput" `List.elem` (fst <$> qs)
+      let env = OperationEnv i opts f t streamInput
       pure $
         case websocketsApp defaultConnectionOptions (wsApp env req) req of
           Just resp -> respond resp
@@ -372,12 +379,11 @@ allocateAcquire lock = fst <$> allocate_ (acquire lock) (Lock.release lock)
 transcode :: OperationEnv -> IO ()
 transcode env =
   runResourceT $ do
-    downloadLockReleaseKey <- queueForLock _downloadLock
-    withFlag downloading $ liftIO $ download env onDownloadProgress
+    beforeTranscode <- prepareInput
     liftIO $ forkIO $ getDuration env
     allocateProgressFlag env $ set converting
     queueForLock _transcodeLock
-    Resource.release downloadLockReleaseKey
+    beforeTranscode
     liftIO $
       runTranscode >>= \case
         ExitSuccess ->
@@ -385,13 +391,21 @@ transcode env =
             storeFile (target env) transcodeFile
             storeFile logFileId logFilePath
             removeFile transcodeFile
-            removeFile _inputFile
+            -- Possibly we can remove the input file regardless of whether we downloaded one.
+            when (not $ streamInput env) $ removeFile _inputFile
             removeFile logFilePath
         ExitFailure code -> do
           warningM "transcode" $
             "process " <> show args <> " failed with exit code " <> show code
           removeFileIfExists transcodeFile
   where
+    prepareInput =
+      if not $ streamInput env
+        then do
+          downloadLockReleaseKey <- queueForLock _downloadLock
+          withFlag downloading $ liftIO $ download env onDownloadProgress
+          return $ Resource.release downloadLockReleaseKey
+        else return $ return ()
     queueForLock lock = withFlag queued $ allocateAcquire lock
     _transcodeLock = transcodeLock . transcoder $ env
     _downloadLock = downloadLock . transcoder $ env
@@ -505,7 +519,7 @@ contentLength hs =
 
 ffmpegArgs :: OperationEnv -> [String]
 ffmpegArgs env =
-  let i = inputFile env
+  let i = inputArg env
       opts = List.map C.unpack . ffmpegOpts $ env
    in ["nice", "ffmpeg", "-nostdin", "-hide_banner", "-i", i] ++
       opts ++ ["-progress", progressUrl env, "-y", transcodeOutputPath env]
@@ -574,7 +588,7 @@ progressApp f req respond = do
 
 getDuration :: OperationEnv -> IO ()
 getDuration env = do
-  md <- FFmpeg.probeDuration $ inputFile env
+  md <- FFmpeg.probeDuration $ inputArg env
   case md of
     Nothing -> return ()
     Just d ->
