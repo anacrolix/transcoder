@@ -33,6 +33,7 @@ import           Data.Maybe
 import           Data.Monoid                     ()
 import qualified Data.Text                       as T
 import qualified Data.Text.IO                    as TIO
+import           Data.X509
 import           Data.X509.CertificateStore
 import           Data.X509.Validation
 import           Extra
@@ -91,7 +92,10 @@ main :: IO () = do
             { onClientCertificate =
                 \chain -> do
                   reasons <-
-                    validateDefault
+                    validate
+                      Data.X509.HashSHA256
+                      defaultHooks
+                      defaultChecks {checkLeafV3 = False}
                       certStore
                       def
                       ("localhost", C.pack $ ":" <> show mainPort)
