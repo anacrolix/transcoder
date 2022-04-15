@@ -1,8 +1,8 @@
 module SkipChan where
 
-import Control.Concurrent.MVar
-import System.IO.Unsafe
-import Data.Maybe
+import           Control.Concurrent.MVar
+import           Data.Maybe
+import           System.IO.Unsafe
 
 data SkipChan a =
   SkipChan (MVar (Maybe a, [MVar ()]))
@@ -15,7 +15,7 @@ instance Show a => Show (SkipChan a) where
       (v, waiters) = unsafePerformIO $ readMVar main
       sem' = case unsafePerformIO $ tryReadMVar sem of
         Nothing -> False
-        Just _ -> True
+        Just _  -> True
 
 newSkipChan :: IO (SkipChan a)
 newSkipChan = do

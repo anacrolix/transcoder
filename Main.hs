@@ -7,7 +7,7 @@
 
 import           Control.Arrow                   ((>>>))
 import           Control.Concurrent
-import           Control.Concurrent.Async        (race_)
+import           Control.Concurrent.Async
 import           Control.Concurrent.Lock         as Lock
 import           Control.Concurrent.STM
 import           Control.Lens
@@ -16,7 +16,8 @@ import           Control.Monad.IO.Unlift
 import           Control.Monad.Trans.Except
 import qualified Crypto.Hash.MD5                 as MD5
 import           Data.Aeson
-import           Data.ByteString                 as B
+import           Data.ByteString                 (ByteString)
+import qualified Data.ByteString                 as B
 import           Data.ByteString.Builder         (byteString)
 import qualified Data.ByteString.Char8           as C
 import qualified Data.ByteString.Lazy            as LBS
@@ -25,12 +26,17 @@ import qualified Data.ByteString.Streaming.Char8 as BSC
 import           Data.ByteString.Streaming.HTTP  as Http.Client hiding
                                                                  (runResourceT)
 import           Data.Char
+import           Data.Coerce                     (coerce)
 import           Data.Default.Class
+import           Data.Foldable
 import           Data.Hex
 import qualified Data.List                       as List
 import qualified Data.Map.Strict                 as Map
 import           Data.Maybe
 import           Data.Monoid                     ()
+import           Data.Monoid                     (Alt (..))
+import           Data.Streaming.Network.Internal
+import           Data.String
 import qualified Data.Text                       as T
 import qualified Data.Text.IO                    as TIO
 import           Data.X509
@@ -52,6 +58,7 @@ import           Streaming                       as S
 import qualified Streaming.Prelude               as S
 import           System.Directory
 import           System.DiskSpace
+import           System.Environment
 import           System.Exit                     (ExitCode (..))
 import           System.FilePath
 import           System.IO
@@ -76,13 +83,18 @@ main :: IO () = do
   debugM rootLoggerName "started main"
   certStore <- fromJust <$> readCertificateStore "certificate.pem"
   t <- newTranscoder
-  forkIO $ do
-    debugM rootLoggerName $
-      "progress server starting on port " <> show progressAppPort
-    Warp.runSettings
-      (setHost "localhost" $
-       setPort progressAppPort $ setOnException onException defaultSettings) $
-      progressApp $ \id pos -> updateProgress id t $ set convertPos pos
+  -- startProgressServer t "localhost"
+  -- args <- getArgs
+  extraHosts <- getArgs
+  let allHosts = "localhost":extraHosts
+  mapM_ (startProgressServer t . fromString) allHosts
+  -- startProgressServer
+  raceAll ( map (runMainServer certStore t . fromString) allHosts )
+
+mainPort = 3000
+
+-- runMainServer :: a -> b -> c -> IO ()
+runMainServer certStore t host = do
   infoM rootLoggerName $ "starting main http server on port " <> show mainPort
   runTLS
     defaultTlsSettings
@@ -108,11 +120,22 @@ main :: IO () = do
                         CertificateRejectOther $ show reasons
             }
       }
-    (setHost "localhost" $ setPort mainPort $ setOnException onException defaultSettings) $
+    (setHost host $ setPort mainPort $ setOnException Main.onException defaultSettings) $
     app t
-  where
-    onException _ e = TIO.hPutStrLn stderr $ T.pack $ show e
-    mainPort = 3000
+
+startProgressServer t host =
+  forkIO $ do
+    debugM rootLoggerName $
+      "progress server starting on port " <> show progressAppPort
+    Warp.runSettings
+      (setHost host $
+       setPort progressAppPort $ setOnException Main.onException defaultSettings) $
+      progressApp $ \id pos -> updateProgress id t $ set convertPos pos
+
+onException _ e = TIO.hPutStrLn stderr $ T.pack $ show e
+
+raceAll :: [IO a] -> IO a
+raceAll = runConcurrently . asum . map Concurrently
 
 newTranscoder :: IO Transcoder
 newTranscoder = do

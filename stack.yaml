@@ -3,5 +3,7 @@ extra-deps:
   # These aren't in the LTS
   - streaming-utils-0.2.0.0
   - json-stream-0.4.2.4@sha256:8b7f17d54a6e1e6311756270f8bcf51e91bab4300945400de66118470dcf51b9
-resolver: lts-13.25
+  - hex-0.2.0@sha256:197d2561d2e216c4ead035b4911dabc6e678ac6257cb71b64e324c822f6f9f5a,726
+  - streaming-wai-0.1.1@sha256:eb7658d3cf38620cd15bfa2a49eb9d6d62e6854865033a387a4bb5a57342c3f1,899
+resolver: lts-17.15
 allow-newer: true

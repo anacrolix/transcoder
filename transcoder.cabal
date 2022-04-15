@@ -33,6 +33,7 @@ executable transcoder
     streaming,
     streaming-bytestring,
     streaming-wai,
+    streaming-commons,
     hslogger,
     resourcet,
     filepath,

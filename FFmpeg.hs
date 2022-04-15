@@ -1,12 +1,12 @@
+{-# LANGUAGE BangPatterns  #-}
 {-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE BangPatterns #-}
 
 module FFmpeg where
 
-import Data.Aeson
-import Data.ByteString.Lazy
-import GHC.Generics
-import System.Process
+import           Data.Aeson
+import           Data.ByteString.Lazy
+import           GHC.Generics
+import           System.Process
 
 probeDuration :: String -> IO (Maybe Float)
 probeDuration s =
