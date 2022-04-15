@@ -92,7 +92,7 @@ mainPort = 3000
 
 -- runMainServer :: a -> b -> c -> IO ()
 runMainServer certStore t host = do
-  infoM rootLoggerName $ "starting main http server on port " <> show mainPort
+  infoM rootLoggerName $ "starting main http server at " <> show host <> ":" <> show mainPort
   runTLS
     defaultTlsSettings
       { tlsWantClientCert = True
@@ -123,7 +123,7 @@ runMainServer certStore t host = do
 startProgressServer t host =
   forkIO $ do
     debugM rootLoggerName $
-      "progress server starting on port " <> show progressAppPort
+      "progress server starting at " <> show host <> ":" <> show progressAppPort
     Warp.runSettings
       (setHost host $
        setPort progressAppPort $ setOnException Main.onException defaultSettings) $
