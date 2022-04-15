@@ -5,40 +5,34 @@
 {-# LANGUAGE RankNTypes               #-}
 {-# LANGUAGE ScopedTypeVariables      #-}
 
-import           Control.Arrow                   ((>>>))
+import           Control.Arrow                  ((>>>))
 import           Control.Concurrent
 import           Control.Concurrent.Async
-import           Control.Concurrent.Lock         as Lock
+import           Control.Concurrent.Lock        as Lock
 import           Control.Concurrent.STM
 import           Control.Lens
 import           Control.Monad
 import           Control.Monad.IO.Unlift
 import           Control.Monad.Trans.Except
-import qualified Crypto.Hash.MD5                 as MD5
+import qualified Crypto.Hash.MD5                as MD5
 import           Data.Aeson
-import           Data.ByteString                 (ByteString)
-import qualified Data.ByteString                 as B
-import           Data.ByteString.Builder         (byteString)
-import qualified Data.ByteString.Char8           as C
-import qualified Data.ByteString.Lazy            as LBS
-import qualified Data.ByteString.Streaming       as BS
-import qualified Data.ByteString.Streaming.Char8 as BSC
-import           Data.ByteString.Streaming.HTTP  as Http.Client hiding
-                                                                 (runResourceT)
+import           Data.ByteString                (ByteString)
+import qualified Data.ByteString                as B
+import           Data.ByteString.Builder        (byteString)
+import qualified Data.ByteString.Char8          as C
+import qualified Data.ByteString.Lazy           as LBS
+import           Data.ByteString.Streaming.HTTP as Http.Client hiding
+                                                                (runResourceT)
 import           Data.Char
-import           Data.Coerce                     (coerce)
 import           Data.Default.Class
 import           Data.Foldable
 import           Data.Hex
-import qualified Data.List                       as List
-import qualified Data.Map.Strict                 as Map
+import qualified Data.List                      as List
+import qualified Data.Map.Strict                as Map
 import           Data.Maybe
-import           Data.Monoid                     ()
-import           Data.Monoid                     (Alt (..))
-import           Data.Streaming.Network.Internal
 import           Data.String
-import qualified Data.Text                       as T
-import qualified Data.Text.IO                    as TIO
+import qualified Data.Text                      as T
+import qualified Data.Text.IO                   as TIO
 import           Data.X509
 import           Data.X509.CertificateStore
 import           Data.X509.Validation
@@ -46,20 +40,23 @@ import           Extra
 import qualified FFmpeg
 import           Network.HTTP.Types
 import           Network.TLS
-import           Network.Wai                     as Wai
-import           Network.Wai.Handler.Warp        as Warp
+import           Network.Wai                    as Wai
+import           Network.Wai.Handler.Warp       as Warp
 import           Network.Wai.Handler.WarpTLS
 import           Network.Wai.Handler.WebSockets
 import           Network.Wai.Streaming
 import           Network.WebSockets.Connection
 import           Progress
 import           SkipChan
-import           Streaming                       as S
-import qualified Streaming.Prelude               as S
+import           Streaming                      as S
+import           Streaming.ByteString           (ByteStream)
+import qualified Streaming.ByteString           as BS
+import qualified Streaming.ByteString.Char8     as BSC
+import qualified Streaming.Prelude              as S
 import           System.Directory
 import           System.DiskSpace
 import           System.Environment
-import           System.Exit                     (ExitCode (..))
+import           System.Exit                    (ExitCode (..))
 import           System.FilePath
 import           System.IO
 import           System.Log.Formatter
@@ -68,7 +65,7 @@ import           System.Log.Handler.Simple
 import           System.Log.Logger
 import           System.Process
 import           UnliftIO.Exception
-import           UnliftIO.Resource               as Resource
+import           UnliftIO.Resource              as Resource
 
 progressAppPort :: Port
 progressAppPort = 3001
@@ -313,7 +310,7 @@ respondPartial ::
   -> Maybe ByteRanges
   -> FileLength
   -> Respond
-  -> (FileLength -> BS.ByteString (ResourceT IO) ())
+  -> (FileLength -> ByteStream (ResourceT IO) ())
   -> IO ResponseReceived
 respondPartial method ranges size respond get =
   respondStreamingByteString respond status headers $
@@ -346,7 +343,7 @@ respondStreamingByteString ::
      Respond
   -> Status
   -> ResponseHeaders
-  -> BS.ByteString (ResourceT IO) ()
+  -> ByteStream (ResourceT IO) ()
   -> IO ResponseReceived
 respondStreamingByteString respond status headers bs =
   respond $ responseStream status headers streamingBody
@@ -495,7 +492,7 @@ handleDownloadResponse ::
      FilePath
   -> Integer
   -> (Float -> IO ())
-  -> Http.Client.Response (BSC.ByteString IO ())
+  -> Http.Client.Response (ByteStream IO ())
   -> IO ()
 handleDownloadResponse filePath partialOffset progress response =
   case statusCode status of
@@ -521,7 +518,7 @@ handleDownloadResponse filePath partialOffset progress response =
         Nothing    -> 0.5
 
 streamProgress ::
-     (Integer -> IO ()) -> BS.ByteString IO r -> BS.ByteString IO (Of Integer r)
+     (Integer -> IO ()) -> ByteStream IO r -> ByteStream IO (Of Integer r)
 streamProgress callback stream =
   BS.chunkFoldM step (return 0) return $ BS.copy stream
   where
@@ -530,7 +527,7 @@ streamProgress callback stream =
       liftIO $ callback next
       return next
 
-writeFileAt :: FilePath -> Integer -> BS.ByteString IO () -> IO ()
+writeFileAt :: FilePath -> Integer -> ByteStream IO () -> IO ()
 writeFileAt path offset bytes =
   withBinaryFile path ReadWriteMode $ \handle -> do
     hSeek handle AbsoluteSeek offset
@@ -600,8 +597,8 @@ progressApp f req respond = do
                 f id $ 1000 * read s
               -- Maybe return Bool for continuation based on progress field
               _ -> return ()
-      let sBody = BSC.fromChunks $ streamingRequest req :: BS.ByteString IO ()
-          lines = BSC.lines sBody :: Stream (BS.ByteString IO) IO ()
+      let sBody = BSC.fromChunks $ streamingRequest req :: ByteStream IO ()
+          lines = BSC.lines sBody :: Stream (ByteStream IO) IO ()
           bsLines = S.mapped BSC.toStrict lines :: Stream (Of ByteString) IO ()
           sLines =
             S.map (fmap C.unpack . C.split '=') bsLines :: Stream (Of [String]) IO ()
@@ -619,8 +616,8 @@ getDuration env = do
       set inputDuration $ ceiling $ d * 1e9
 
 data Store = Store
-  { put  :: OpId -> BS.ByteString (ResourceT IO) () -> IO ()
-  , get  :: OpId -> FileLength -> BS.ByteString (ResourceT IO) ()
+  { put  :: OpId -> ByteStream (ResourceT IO) () -> IO ()
+  , get  :: OpId -> FileLength -> ByteStream (ResourceT IO) ()
   , size :: OpId -> IO FileLength
   , have :: OpId -> IO Bool
   }
