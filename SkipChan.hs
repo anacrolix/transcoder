@@ -27,7 +27,7 @@ putSkipChan :: SkipChan a -> a -> IO ()
 putSkipChan (SkipChan main _) v = do
   (_, sems) <- takeMVar main
   putMVar main (Just v, [])
-  mapM_ (\sem -> putMVar sem ()) sems
+  mapM_ (`putMVar` ()) sems
 
 getSkipChan :: SkipChan a -> IO a
 getSkipChan (SkipChan main sem) = do
