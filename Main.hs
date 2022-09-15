@@ -272,7 +272,7 @@ serveTranscode t req respond = do
     runExceptT $ do
       i <- queryValue "i"
       f <- queryValue "f"
-      streamInput <- pure $ "streamInput" `List.elem` (fst <$> qs)
+      let streamInput = "streamInput" `List.elem` (fst <$> qs)
       let env = OperationEnv i opts f t streamInput
       pure $
         case websocketsApp defaultConnectionOptions (wsApp env req) req of
@@ -412,7 +412,7 @@ transcode env =
             storeFile logFileId logFilePath
             removeFile transcodeFile
             -- Possibly we can remove the input file regardless of whether we downloaded one.
-            when (not $ streamInput env) $ removeFile _inputFile
+            unless (streamInput env) $ removeFile _inputFile
             removeFile logFilePath
         ExitFailure code -> do
           warningM "transcode" $
@@ -535,7 +535,7 @@ writeFileAt path offset bytes =
 
 contentLength :: ResponseHeaders -> Maybe FileLength
 contentLength hs =
-  (read . C.unpack . snd) <$> List.find (\(n, _) -> n == hContentLength) hs
+  read . C.unpack . snd <$> List.find (\(n, _) -> n == hContentLength) hs
 
 ffmpegArgs :: OperationEnv -> [String]
 ffmpegArgs env =
