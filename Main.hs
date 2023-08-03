@@ -16,13 +16,14 @@ import           Control.Monad.IO.Unlift
 import           Control.Monad.Trans.Except
 import qualified Crypto.Hash.MD5                as MD5
 import           Data.Aeson
+import qualified Data.Bifunctor                 (second)
 import           Data.ByteString                (ByteString)
 import qualified Data.ByteString                as B
 import           Data.ByteString.Builder        (byteString)
 import qualified Data.ByteString.Char8          as C
 import qualified Data.ByteString.Lazy           as LBS
 import           Data.ByteString.Streaming.HTTP as Http.Client hiding
-                                                                (runResourceT)
+                                                               (runResourceT)
 import           Data.Char
 import           Data.Default.Class
 import           Data.Foldable
@@ -44,13 +45,14 @@ import           Network.Wai                    as Wai
 import           Network.Wai.Handler.Warp       as Warp
 import           Network.Wai.Handler.WarpTLS
 import           Network.Wai.Handler.WebSockets
+import           Network.Wai.Parse
 import           Network.Wai.Streaming
 import           Network.WebSockets.Connection
 import           Progress
 import           SkipChan
 import           Streaming                      as S
-import           Streaming.ByteString           (ByteStream)
 import qualified Streaming.ByteString           as BS
+import           Streaming.ByteString           (ByteStream)
 import qualified Streaming.ByteString.Char8     as BSC
 import qualified Streaming.Prelude              as S
 import           System.Directory
@@ -66,7 +68,6 @@ import           System.Log.Logger
 import           System.Process
 import           UnliftIO.Exception
 import           UnliftIO.Resource              as Resource
-import Network.Wai.Parse
 
 progressAppPort :: Port
 progressAppPort = 3001
@@ -245,7 +246,7 @@ dupEvents t oi = do
       m <- readTVar $ events t
       let (ret, m') =
             case Map.lookup oi m of
-              Nothing -> (return newValue, Map.insert oi (1, newValue) m)
+              Nothing       -> (return newValue, Map.insert oi (1, newValue) m)
               Just (rc, es) -> (dupSkipChan es, Map.insert oi (rc + 1, es) m)
       writeTVar (events t) m'
       return ret
