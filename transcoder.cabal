@@ -48,4 +48,5 @@ executable transcoder
     x509-store,
     disk-free-space,
     unliftio,
-    unliftio-core
+    unliftio-core,
+    wai-extra

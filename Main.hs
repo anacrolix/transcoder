@@ -66,6 +66,7 @@ import           System.Log.Logger
 import           System.Process
 import           UnliftIO.Exception
 import           UnliftIO.Resource              as Resource
+import Network.Wai.Parse
 
 progressAppPort :: Port
 progressAppPort = 3001
@@ -270,8 +271,9 @@ serveTranscode ::
 serveTranscode t req respond = do
   e <-
     runExceptT $ do
-      i <- queryValue "i"
-      f <- queryValue "f"
+      bodyParams :: [Param] <- liftIO $ fst <$> parseRequestBody lbsBackEnd req
+      i <- queryValue "i" bodyParams
+      f <- queryValue "f" bodyParams
       let streamInput = "streamInput" `List.elem` (fst <$> qs)
       let env = OperationEnv i opts f t streamInput
       pure $
@@ -293,10 +295,13 @@ serveTranscode t req respond = do
     Right rr -> rr
   where
     qs = Wai.queryString req
-    queryValue :: ByteString -> ExceptT Wai.Response IO ByteString
-    queryValue k =
-      maybe (throwE . badParam $ k) return $ getFirstQueryValue k qs
+    queryValue :: ByteString -> [Param] -> ExceptT Wai.Response IO ByteString
+    queryValue k bodyParams =
+      maybe (throwE . badParam $ k) return $ getFirstQueryValue k $ queryWithBodyParams qs bodyParams
     opts = getQueryValues "opt" qs
+
+queryWithBodyParams :: Query -> [Param] -> Query
+queryWithBodyParams query bodyParams = query ++ map (\(k, v) -> (k, Just v)) bodyParams
 
 type Respond = Wai.Response -> IO ResponseReceived
 
