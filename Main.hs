@@ -302,7 +302,7 @@ serveTranscode t req respond = do
     opts = getQueryValues "opt" qs
 
 queryWithBodyParams :: Query -> [Param] -> Query
-queryWithBodyParams query bodyParams = query ++ map (\(k, v) -> (k, Just v)) bodyParams
+queryWithBodyParams query bodyParams = query ++ map (Data.Bifunctor.second Just) bodyParams
 
 type Respond = Wai.Response -> IO ResponseReceived
 

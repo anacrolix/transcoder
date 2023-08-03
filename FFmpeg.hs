@@ -18,13 +18,13 @@ probeDuration s =
     !info <- decode <$> hGetContents hout
     return $ read . duration . format <$> info
 
-data Info = Info
+newtype Info = Info
   { format :: Format
   } deriving (Generic)
 
 instance FromJSON Info
 
-data Format = Format
+newtype Format = Format
   { duration :: String
   } deriving (Generic)
 
