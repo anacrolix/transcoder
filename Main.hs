@@ -282,7 +282,7 @@ serveTranscode ::
 serveTranscode t req respond = do
     e <-
         runExceptT $ do
-            bodyParams :: [Param] <- liftIO $ fst <$> parseRequestBody lbsBackEnd req
+            bodyParams :: [Param] <- liftIO parseBodyParams
             i <- queryValue "i" bodyParams
             f <- queryValue "f" bodyParams
             let streamInput = "streamInput" `List.elem` (fst <$> qs)
@@ -305,12 +305,14 @@ serveTranscode t req respond = do
         Left r -> respond r
         Right rr -> rr
   where
+    parseBodyParams :: IO [Param] = fst <$> parseRequestBodyEx (setMaxRequestNumFiles 0 defaultParseRequestBodyOptions) lbsBackEnd req
     qs = Wai.queryString req
     queryValue :: ByteString -> [Param] -> ExceptT Wai.Response IO ByteString
     queryValue k bodyParams =
         maybe (throwE . badParam $ k) return $ getFirstQueryValue k $ queryWithBodyParams qs bodyParams
     opts = getQueryValues "opt" qs
 
+-- Augments query string with request body params
 queryWithBodyParams :: Query -> [Param] -> Query
 queryWithBodyParams query bodyParams = query ++ map (Data.Bifunctor.second Just) bodyParams
 
