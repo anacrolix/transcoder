@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveGeneric   #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE InstanceSigs #-}
 
 module Progress where
 
@@ -26,12 +27,17 @@ data Progress = Progress
 makeLenses ''Progress
 
 instance ToJSON Progress where
+  toEncoding :: Progress -> Encoding
   toEncoding =
     genericToEncoding $
     defaultOptions
     { fieldLabelModifier =
-        (\(h:t) -> toUpper h : t) . trimPrefix "progress" . drop 1
+        mapHead toUpper . trimPrefix "progress" . drop 1
     }
+
+mapHead :: (a -> a) -> [a] -> [a]
+mapHead f (x:xs) = f x: xs
+mapHead _ [] = []
 
 defaultProgress :: Progress
 defaultProgress =
@@ -47,4 +53,5 @@ defaultProgress =
   , _queued = False
   }
 
+-- <*> is from Applicative ((->) r)
 trimPrefix p = fromMaybe <*> stripPrefix p
