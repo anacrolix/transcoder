@@ -89,7 +89,6 @@ main :: IO () = do
     extraHosts <- getArgs
     let allHosts = "localhost" : extraHosts
     mapM_ (startProgressServer t . fromString) allHosts
-    -- startProgressServer
     raceAll (map (runMainServer certStore t . fromString) allHosts)
 
 mainPort = 3000
@@ -224,7 +223,8 @@ app t req respond = do
 wsApp :: OperationEnv -> Wai.Request -> PendingConnection -> IO ()
 wsApp env req pending_conn = do
     conn <- acceptRequest pending_conn
-    let relayProgress es = go Nothing
+    let relayProgress :: EventChan -> IO ()
+        relayProgress es = go Nothing
           where
             go last = do
                 p <- getProgress oi t
@@ -248,6 +248,7 @@ decEvents t oi =
                     then Nothing
                     else Just (rc - 1, ec)
 
+-- Increments the operation ID events ref count and returns a channel for its events.
 dupEvents :: Transcoder -> OpId -> IO EventChan
 dupEvents t oi = do
     newValue <- newSkipChan
@@ -274,8 +275,11 @@ getProgress op t = do
             _ready <- store t & have $ op
             return $
                 if _ready
-                    then set ready True defaultProgress
+                    then readyProgress
                     else defaultProgress
+
+readyProgress :: Progress
+readyProgress = set ready True defaultProgress
 
 serveTranscode ::
     Transcoder -> ServerRequest -> Respond -> IO Wai.ResponseReceived
