@@ -1,5 +1,6 @@
 {-# LANGUAGE DisambiguateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE RankNTypes #-}
@@ -122,7 +123,7 @@ runMainServer certStore t host = do
                                                 show reasons
                     }
             }
-        (setHost host $ setPort mainPort $ setOnException Main.onException defaultSettings)
+        (setTimeout (24 * 60 * 60) . setHost host . setPort mainPort . setOnException Main.onException $ defaultSettings)
         $ app t
 
 startProgressServer t host =
