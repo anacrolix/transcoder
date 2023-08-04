@@ -69,6 +69,7 @@ import System.Log.Handler
 import System.Log.Handler.Simple
 import System.Log.Logger
 import System.Process
+import Text.Printf
 import UnliftIO.Exception
 import UnliftIO.Resource as Resource
 
@@ -634,7 +635,7 @@ progressApp f req respond = do
                         ("out_time_ms" : s : _) -> do
                             debugM "progress" $ show id <> ": " <> show ss
                             progress <- f id $ 1000 * read s
-                            debugM "convert progress" $ show progress
+                            for_ progress $ debugM "convert progress" . Text.Printf.printf "%.2f%%" . (* 100) . convertProgress
                         -- Maybe return Bool for continuation based on progress field
                         _ -> return ()
             let sBody = BSC.fromChunks $ streamingRequest req :: ByteStream IO ()
@@ -645,6 +646,9 @@ progressApp f req respond = do
             -- BSC.stdout sBody
             S.mapM_ act sLines
             return resp
+
+convertProgress :: Progress -> Float
+convertProgress p = fromIntegral (p ^. convertPos) / fromIntegral (p ^. inputDuration)
 
 getDuration :: OperationEnv -> IO ()
 getDuration env = void $ runMaybeT $ do
