@@ -14,6 +14,7 @@ import Control.Lens
 import Control.Monad
 import Control.Monad.IO.Unlift
 import Control.Monad.Trans.Except
+import Control.Monad.Trans.Maybe
 import qualified Crypto.Hash.MD5 as MD5
 import Data.Aeson
 import qualified Data.Bifunctor (second)
@@ -398,11 +399,15 @@ byteRangeBegin size =
         ByteRangeFromTo f _ -> f
         ByteRangeSuffix s -> size - s
 
--- updateProgress :: OpId -> Transcoder -> (Progress -> Progress) -> IO ()
+updateProgress :: (MonadIO m) => OpId -> Transcoder -> (Progress -> Progress) -> m (Maybe Progress)
 updateProgress k t f =
     liftIO $ do
-        atomically $ modifyTVar' (active t) $ Map.update (Just . f) k
+        newProgress <- atomically $ do
+            let tvar = active t
+            modifyTVar' tvar $ Map.update (Just . f) k
+            (Map.!? k) <$> readTVar tvar
         onProgressEvent k t
+        return newProgress
 
 onProgressEvent :: OpId -> Transcoder -> IO ()
 onProgressEvent oi t = do
@@ -464,7 +469,7 @@ transcode env =
     transcodeFile = transcodeOutputPath env
     args = ffmpegArgs env
     up = updateProgress (target env) (transcoder env)
-    onDownloadProgress = up . set progressDownloadProgress
+    onDownloadProgress = void . up . set progressDownloadProgress
     storeFile :: OpId -> FilePath -> IO ()
     storeFile id path = do
         debugM rootLoggerName $ "storing " <> show id
@@ -491,8 +496,9 @@ allocateProgressFlag env set =
     fst
         <$> allocate_
             (updateProgressEnv env (set True))
-            (updateProgressEnv env (set False))
+            (void $ updateProgressEnv env (set False))
 
+allocate_ :: (MonadResource m) => IO a -> IO () -> m (ReleaseKey, a)
 allocate_ a f = allocate a (const f)
 
 removeFileIfExists :: FilePath -> IO ()
@@ -612,7 +618,7 @@ hashStrings :: [ByteString] -> ByteString
 hashStrings = MD5.updates MD5.init >>> MD5.finalize
 
 -- This is the request site for ffmpeg's progress parameter.
-progressApp :: (OpId -> Integer -> IO ()) -> Application
+progressApp :: (OpId -> Integer -> IO (Maybe Progress)) -> Application
 progressApp f req respond = do
     let id :: Maybe OpId =
             OpId . C.unpack <$> getFirstQueryValue "id" (Wai.queryString req)
@@ -626,7 +632,8 @@ progressApp f req respond = do
                     case ss of
                         ("out_time_ms" : s : _) -> do
                             debugM "progress" $ show id <> ": " <> show ss
-                            f id $ 1000 * read s
+                            progress <- f id $ 1000 * read s
+                            debugM "convert progress" $ show progress
                         -- Maybe return Bool for continuation based on progress field
                         _ -> return ()
             let sBody = BSC.fromChunks $ streamingRequest req :: ByteStream IO ()
@@ -639,15 +646,9 @@ progressApp f req respond = do
             return resp
 
 getDuration :: OperationEnv -> IO ()
-getDuration env = do
-    md <- FFmpeg.probeDuration $ inputArg env
-    case md of
-        Nothing -> return ()
-        Just d ->
-            updateProgress (target env) (transcoder env) $
-                set inputDuration $
-                    ceiling $
-                        d * 1e9
+getDuration env = void $ runMaybeT $ do
+    d <- MaybeT $ FFmpeg.probeDuration $ inputArg env
+    updateProgressEnv env $ set inputDuration $ ceiling $ d * 1e9
 
 data Store = Store
     { put :: OpId -> ByteStream (ResourceT IO) () -> IO ()
