@@ -33,25 +33,18 @@ import Data.ByteString.Streaming.HTTP as Http.Client hiding (
     runResourceT,
  )
 import Data.Char
-import Data.Default.Class
 import Data.Foldable
 import Data.Hex
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Maybe
-import Data.String
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import Data.X509
-import Data.X509.CertificateStore
-import Data.X509.Validation
 import Extra
 import qualified FFmpeg
 import Network.HTTP.Types
-import Network.TLS
 import Network.Wai as Wai
 import Network.Wai.Handler.Warp as Warp
-import Network.Wai.Handler.WarpTLS
 import Network.Wai.Handler.WebSockets
 import Network.Wai.Parse
 import Network.Wai.Streaming
@@ -65,13 +58,9 @@ import qualified Streaming.ByteString.Char8 as BSC
 import qualified Streaming.Prelude as S
 import System.Directory
 import System.DiskSpace
-import System.Environment
 import System.Exit (ExitCode (..))
 import System.FilePath
 import System.IO
-import System.Log.Formatter
-import System.Log.Handler
-import System.Log.Handler.Simple
 import System.Log.Logger
 import System.Process
 import Text.Printf
